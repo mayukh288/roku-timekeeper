@@ -14,6 +14,7 @@ shuts off even if the parent's iPhone is off or away.
 - Chromecast locks wake a switched-off TV first: the server checks the TV power state, sends a
   Wake-on-LAN magic packet when it is off, then switches the input. `WAKE_BROADCAST`
   (default `192.168.1.255`) sets the broadcast address for the wake packet.
+  When the TV is already on the wanted input, the round is skipped (logged, no commands sent).
 - State persists in `/mnt/datapool/apps/roku-timekeeper/data/settings.json`; only a salted PIN hash is stored.
 
 ## First-time setup (parent)

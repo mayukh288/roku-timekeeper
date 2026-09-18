@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -123,5 +123,48 @@ describe('wake-then-switch support', () => {
     assert.equal(tvIsOn('<power-mode>Ready</power-mode>'), false);
     assert.equal(tvIsOn('<power-mode>DisplayOff</power-mode>'), false);
     assert.equal(tvIsOn('<device-info></device-info>'), null);
+  });
+});
+
+describe('skip wake+switch when already on the input', () => {
+  it('maps InputHDMI keys to tvinput app ids', () => {
+    assert.equal(tvAppId('InputHDMI3'), 'tvinput.hdmi3');
+    assert.equal(tvAppId('InputHDMI1'), 'tvinput.hdmi1');
+  });
+
+  it('reads the active app id from attribute or child form', () => {
+    assert.equal(
+      parseActiveApp('<active-app><app id="tvinput.hdmi3" type="tvin">chromecast</app></active-app>'),
+      'tvinput.hdmi3'
+    );
+    assert.equal(parseActiveApp('<app><id>tvinput.hdmi1</id></app>'), 'tvinput.hdmi1');
+    assert.equal(parseActiveApp('<active-app></active-app>'), null);
+  });
+
+  it('skips only when verifiably on the wanted input', () => {
+    assert.equal(
+      shouldEnforceSwitch({ powerOn: true, activeAppId: 'tvinput.hdmi3', wantAppId: 'tvinput.hdmi3' }),
+      false
+    );
+    assert.equal(
+      shouldEnforceSwitch({ powerOn: true, activeAppId: 'TVINPUT.HDMI3', wantAppId: 'tvinput.hdmi3' }),
+      false
+    );
+    assert.equal(
+      shouldEnforceSwitch({ powerOn: true, activeAppId: 'tvinput.hdmi1', wantAppId: 'tvinput.hdmi3' }),
+      true
+    );
+    assert.equal(
+      shouldEnforceSwitch({ powerOn: false, activeAppId: 'tvinput.hdmi3', wantAppId: 'tvinput.hdmi3' }),
+      true
+    );
+    assert.equal(
+      shouldEnforceSwitch({ powerOn: null, activeAppId: 'tvinput.hdmi3', wantAppId: 'tvinput.hdmi3' }),
+      true
+    );
+    assert.equal(
+      shouldEnforceSwitch({ powerOn: true, activeAppId: null, wantAppId: 'tvinput.hdmi3' }),
+      true
+    );
   });
 });

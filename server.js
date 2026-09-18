@@ -541,16 +541,48 @@ async function sendWake(mac) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Chromecast lock on a TV that may be switched off: wake first, then switch input.
+export function tvAppId(cmd) {
+  return `tvinput.${String(cmd || '').replace(/^input/i, '').toLowerCase()}`;
+}
+
+export function parseActiveApp(xml) {
+  const attr = /<app[^>]*\sid="([^"]*)"/i.exec(xml || '');
+  if (attr) return attr[1];
+  const child = /<app[^>]*>[\s\S]*?<id>([^<]*)<\/id>/i.exec(xml || '');
+  return child ? child[1] : null;
+}
+
+// False only when the TV is verifiably on AND already on the wanted input.
+export function shouldEnforceSwitch({ powerOn, activeAppId, wantAppId }) {
+  return !(
+    powerOn === true &&
+    typeof activeAppId === 'string' &&
+    activeAppId.length > 0 &&
+    typeof wantAppId === 'string' &&
+    activeAppId.toLowerCase() === wantAppId.toLowerCase()
+  );
+}
+
+// Chromecast lock: verify state first; wake + switch only when needed.
+// Returns { skipped: true } when the TV is already on the wanted input.
 async function switchToChromecast(cmd) {
+  const want = tvAppId(cmd);
   let needWake = false;
   try {
-    const xml = await rokuQuery('query/device-info', 3000);
-    const on = tvIsOn(xml);
-    log(`wake check: power-mode=${parsePowerMode(xml) || '(unknown)'} -> ${on === null ? 'unknown, trying switch directly' : on ? 'on' : 'off'}`);
+    const [infoXml, appXml] = await Promise.all([
+      rokuQuery('query/device-info', 3000),
+      rokuQuery('query/active-app', 3000),
+    ]);
+    const on = tvIsOn(infoXml);
+    const active = parseActiveApp(appXml);
+    log(`state check: power-mode=${parsePowerMode(infoXml) || '(unknown)'} active-app=${active || '(unknown)'} want=${want}`);
+    if (!shouldEnforceSwitch({ powerOn: on, activeAppId: active, wantAppId: want })) {
+      log('already on the Chromecast input, skipping wake+switch');
+      return { skipped: true };
+    }
     needWake = on === false;
   } catch (error) {
-    log(`wake check: device query failed (${error.message}), assuming off`);
+    log(`state check failed (${error.message}), waking then switching`);
     needWake = true;
   }
   if (needWake) {
@@ -562,6 +594,7 @@ async function switchToChromecast(cmd) {
     await sleep(4000);
   }
   await rokuKey(cmd, 9000);
+  return { skipped: false };
 }
 
 async function sendLockCommand(cmd) {
@@ -575,12 +608,14 @@ async function lockTv(reason) {
   settings.locked = true;
   settings.expiresAt = null;
   try {
-    await sendLockCommand(cmd);
+    const result = await sendLockCommand(cmd);
     settings.lastAction =
       cmd === 'PowerOff'
         ? reason || 'TV powered off — locked'
-        : 'TV switched to Chromecast — locked';
-    log(`lockTv: ${cmd} acknowledged, state=locked`);
+        : result && result.skipped
+          ? 'Already on Chromecast — locked'
+          : 'TV switched to Chromecast — locked';
+    log(result && result.skipped ? 'lockTv: already there, state=locked' : `lockTv: ${cmd} acknowledged, state=locked`);
   } catch (error) {
     settings.lastAction = `Locked, but ${cmd} command failed: ${error.message}`;
     log(`lockTv: ${cmd} FAILED, state=locked (TV may already be off/unreachable)`);
@@ -611,12 +646,13 @@ async function watchdog() {
   let ok = true;
   let detail = `${cmd} acknowledged`;
   try {
-    await sendLockCommand(cmd);
+    const result = await sendLockCommand(cmd);
+    if (result && result.skipped) detail = 'already on Chromecast input';
   } catch (error) {
     ok = false;
     detail = error.message || 'request failed';
   }
-  log(`watchdog result: ${ok ? `TV acknowledged ${cmd}` : `no ack (${detail})`}`);
+  log(ok ? `watchdog result: ${detail}` : `watchdog result: no ack (${detail})`);
   settings.lastWatchdog = { at: new Date().toISOString(), ok, detail };
   watchdogBusy = false;
   const stamp = ok ? 'ok' : `fail:${detail}`;
