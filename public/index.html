@@ -42,7 +42,7 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <p class="muted">Parent control for the living room TV.</p>
 <section id="setup">
 <label>Roku TV address<input id="host" placeholder="192.168.1.112" autocomplete="off"></label>
-<label>Choose parent PIN<input id="newPin" type="password" inputmode="numeric" placeholder="4–12 digits"></label>
+<label>Choose parent PIN<input id="newPin" type="password" inputmode="numeric" placeholder="4–12 digits" autocomplete="new-password"></label>
 <button onclick="setup()">Set up &amp; lock TV</button>
 </section>
 <section id="controls">
@@ -53,7 +53,7 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <button class="secondary" onclick="preset(60)">+60</button>
 </div>
 <div class="row"><label>Minutes<input id="minutes" type="number" min="1" max="720" value="30"></label>
-<label>Parent PIN<input id="pin" type="password" inputmode="numeric" autocomplete="off"></label></div>
+<label>Parent PIN<input id="pin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
 <button onclick="bonus()">Add bonus time</button>
 <button class="secondary" onclick="unlock()">Unlock TV (no timer)</button>
 <button class="danger" onclick="lock()">Lock now</button>
@@ -75,10 +75,10 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <section class="card" id="configCard">
 <h2>Configuration</h2>
 <p class="muted">Rarely-changed settings. Each save needs the parent PIN.</p>
-<div class="row"><label>Current PIN<input id="curPin" type="password" inputmode="numeric" autocomplete="off"></label><label>New PIN<input id="chgPin" type="password" inputmode="numeric" autocomplete="off"></label></div>
+<div class="row"><label>Current PIN<input id="curPin" type="password" inputmode="numeric" autocomplete="current-password"></label><label>New PIN<input id="chgPin" type="password" inputmode="numeric" autocomplete="new-password"></label></div>
 <button class="secondary" onclick="changePin()">Change parent PIN</button>
 <div class="row"><label>Chromecast HDMI<input id="hdmi" type="number" min="1" max="4" value="3"></label><label>Active from<input id="castStart" type="time" value="08:00"></label></div>
-<div class="row"><label>Active to<input id="castEnd" type="time" value="22:30"></label><label>Parent PIN<input id="spin" type="password" inputmode="numeric" autocomplete="off"></label></div>
+<div class="row"><label>Active to<input id="castEnd" type="time" value="22:30"></label><label>Parent PIN<input id="spin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
 <button class="secondary" onclick="saveCast()">Save Chromecast settings</button>
 <div class="row"><label>Away (Tailscale) https URL<input id="awayUrl" placeholder="https://truenas.tailXXXX.ts.net" autocomplete="off"></label></div>
 <button class="secondary" onclick="saveOrigin()">Save away URL</button>
