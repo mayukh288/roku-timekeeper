@@ -237,3 +237,17 @@ describe('night reason in guard status', () => {
     assert.equal(nightSuffix({ lockAction: 'poweroff' }, 'PowerOff'), '');
   });
 });
+
+describe('night flag follows the configured window, not defaults', () => {
+  const at = new Date(Date.UTC(2026, 8, 18, 0, 12));
+
+  it('reports day inside a custom after-midnight window', () => {
+    const st = computeState({ ...base, castStart: '00:05', castEnd: '22:30' }, at, 'UTC');
+    assert.equal(st.night, false);
+  });
+
+  it('reports night at the same instant under default hours (the old bug)', () => {
+    const st = computeState({ ...base }, at, 'UTC');
+    assert.equal(st.night, true);
+  });
+});

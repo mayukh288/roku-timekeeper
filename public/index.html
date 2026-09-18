@@ -143,7 +143,7 @@ function draw(){
     ? `Outside ${cs}–${ce}: locks shut the TV off.`
     : (s.lockAction==='chromecast' ? `Inside ${cs}–${ce}: locks switch the TV to Chromecast.` : '');
   const g=s.watchdog;
-  $('guard').textContent=g&&g.lastAttemptAt?`Guard ${new Date(g.lastAttemptAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${g.lastDetail||'—'}`:'Guard has not run yet.';
+  $('guard').textContent=g&&g.lastAttemptAt?`Guard ${new Date(g.lastAttemptAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${g.lastCmd?g.lastCmd+' → ':''}${g.lastDetail||'—'}${g.lastCode?` (code ${g.lastCode})`:''}`:'Guard has not run yet.';
   if(s.mode==='timed'&&!s.locked&&sec>0)s.remainingSeconds--;
 }
 async function setup(){

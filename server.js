@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.8';
+const VERSION = '1.7.10';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -455,7 +455,12 @@ async function rokuKey(key, timeoutMs = 10000) {
       `roku POST ${url} -> HTTP ${response.status} in ${Date.now() - started}ms` +
         (bodyText ? ` body=${JSON.stringify(bodyText.slice(0, 200))}` : ' (empty body)')
     );
-    if (!response.ok) throw new Error(`Roku returned HTTP ${response.status}`);
+    if (!response.ok) {
+      const err = new Error(`Roku returned HTTP ${response.status}`);
+      err.code = response.status;
+      throw err;
+    }
+    return response.status;
   } catch (error) {
     log(`roku POST ${url} FAILED after ${Date.now() - started}ms: ${error.message}`);
     throw error;
@@ -498,7 +503,11 @@ async function rokuQuery(path, timeoutMs = 3000) {
     const response = await fetch(`http://${settings.rokuHost}:8060/${path}`, {
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`Roku returned HTTP ${response.status}`);
+    if (!response.ok) {
+      const err = new Error(`Roku returned HTTP ${response.status}`);
+      err.code = response.status;
+      throw err;
+    }
     return await response.text();
   } finally {
     clearTimeout(timeout);
@@ -619,24 +628,58 @@ async function switchToChromecast(cmd) {
     needWake = true;
   }
   if (needWake) {
+    // Robust wake: magic packet (needs a learned MAC) plus an ECP PowerOn,
+    // which reaches a standby TV even with no MAC. Then wait until the TV
+    // reports power-on before sending the input switch.
     try {
       await sendWake(await ensureWakeMac());
     } catch (error) {
-      log(`wake: ${error.message}, trying input switch anyway`);
+      log(`wake: ${error.message}, continuing with ECP PowerOn`);
     }
-    await sleep(4000);
+    try {
+      await rokuKey('PowerOn', 9000);
+      log('wake: ECP PowerOn sent');
+    } catch (error) {
+      log(`wake: ECP PowerOn failed (${error.message})`);
+    }
+    let onNow = false;
+    for (let i = 0; i < 8 && !onNow; i++) {
+      await sleep(2000);
+      try {
+        onNow = tvIsOn(await rokuQuery('query/device-info', 3000)) === true;
+      } catch {
+        onNow = false;
+      }
+    }
+    log(onNow ? 'wake: TV reports power-on, sending input switch' : 'wake: TV never reported power-on, sending input switch anyway');
   }
+  let ecp = null;
   try {
-    await rokuKey(cmd, 9000);
+    ecp = await rokuKey(cmd, 9000);
   } catch (error) {
-    if (needWake) throw new Error(`TV unreachable after wake attempt: ${error.message}`);
+    if (needWake) {
+      const err = new Error(`TV unreachable after wake attempt: ${error.message}`);
+      err.code = errCode(error);
+      throw err;
+    }
     throw error;
   }
-  return { skipped: false };
+  // Verify the switch took effect instead of trusting the ack.
+  await sleep(2500);
+  try {
+    const after = parseActiveApp(await rokuQuery('query/active-app', 3000));
+    if (after && want && after.toLowerCase() === want.toLowerCase()) return { confirmed: true, ecp };
+    return { confirmed: false, stillOn: after, ecp };
+  } catch {
+    return { confirmed: null, ecp };
+  }
 }
 
+function errCode(error) {
+  return (error && (error.code ?? error.cause?.code)) ?? null;
+}
 async function sendLockCommand(cmd) {
-  if (cmd === 'PowerOff') return rokuKey(cmd, 9000);
+  if (cmd === 'PowerOff') return { powerOff: true, ecp: await rokuKey(cmd, 9000) };
   return switchToChromecast(cmd);
 }
 
@@ -652,7 +695,9 @@ async function lockTv(reason) {
         ? reason || 'TV powered off — locked'
         : result && result.skipped
           ? 'Already on Chromecast — locked'
-          : 'TV switched to Chromecast — locked';
+          : result && result.confirmed === false
+            ? `Switch sent but TV still on ${result.stillOn || 'unknown input'} — locked, retrying`
+            : 'TV switched to Chromecast — locked';
     log(result && result.skipped ? 'lockTv: already there, state=locked' : `lockTv: ${cmd} acknowledged, state=locked`);
   } catch (error) {
     settings.lastAction = `Locked, but ${cmd} command failed: ${error.message}`;
@@ -683,16 +728,32 @@ async function watchdog() {
   const why = nightSuffix(settings, cmd);
   log(`watchdog: locked, sending ${cmd}${why}`);
   let ok = true;
+  let code = null;
   let detail = `${cmd} acknowledged${why}`;
   try {
     const result = await sendLockCommand(cmd);
-    if (result && result.skipped) detail = 'already on Chromecast input';
+    if (result && result.skipped) {
+      detail = 'already on Chromecast input';
+    } else if (cmd === 'PowerOff') {
+      code = result.ecp;
+      detail = `PowerOff acknowledged${why}`;
+    } else if (result && result.confirmed) {
+      code = result.ecp;
+      detail = `${cmd} confirmed`;
+    } else if (result && result.confirmed === false) {
+      code = result.ecp ?? null;
+      detail = `${cmd} sent, TV still on ${result.stillOn || 'unknown input'} — retrying`;
+    } else {
+      code = (result && result.ecp) ?? null;
+      detail = `${cmd} sent, could not verify — retrying`;
+    }
   } catch (error) {
     ok = false;
-    detail = error.message || 'request failed';
+    code = errCode(error);
+    detail = `${error.message || 'request failed'}${code ? ` (code ${code})` : ''}`;
   }
   log(ok ? `watchdog result: ${detail}` : `watchdog result: no ack (${detail})`);
-  settings.lastWatchdog = { at: new Date().toISOString(), ok, detail };
+  settings.lastWatchdog = { at: new Date().toISOString(), ok, cmd, code, detail };
   watchdogBusy = false;
   const stamp = ok ? 'ok' : `fail:${detail}`;
   if (stamp !== lastWatchdogSaved) {
@@ -705,7 +766,7 @@ async function watchdog() {
   }
 }
 
-export function computeState(s) {
+export function computeState(s, now = new Date(), tz = timeZone) {
   const hasTimer = s.expiresAt !== null && s.expiresAt !== undefined;
   const remainingMs = hasTimer ? Math.max(0, s.expiresAt - Date.now()) : 0;
   const locked = s.locked || (hasTimer && remainingMs === 0);
@@ -716,7 +777,7 @@ export function computeState(s) {
     mode: locked ? 'locked' : hasTimer ? 'timed' : 'open',
     lockAction: s.lockAction || 'poweroff',
     chromecastInput: /^InputHDMI[1-4]$/.test(s.chromecastInput) ? s.chromecastInput : 'InputHDMI1',
-    night: isNight(),
+    night: isNight(now, tz, s.castStart, s.castEnd),
     extraOrigins: Array.isArray(s.extraOrigins) ? s.extraOrigins : [],
     castStart: parseHM(s.castStart) === null ? DEFAULT_CAST_START : s.castStart,
     castEnd: parseHM(s.castEnd) === null ? DEFAULT_CAST_END : s.castEnd,
@@ -726,6 +787,8 @@ export function computeState(s) {
       intervalMs: watchdogMs,
       lastAttemptAt: s.lastWatchdog?.at || null,
       lastOk: s.lastWatchdog?.ok ?? null,
+      lastCmd: s.lastWatchdog?.cmd || null,
+      lastCode: s.lastWatchdog?.code ?? null,
       lastDetail: s.lastWatchdog?.detail || null,
     },
   };
