@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101425">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TV Time">
+<title>TV Time — Parent Control</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#101425;color:#f6f7fb;font:17px system-ui,-apple-system,sans-serif;padding:16px;gap:16px}
+h2{margin:0 0 4px;font-size:22px}
+.card{width:min(94vw,480px);padding:26px;border-radius:22px;background:#1b2138;box-shadow:0 24px 60px #0007}
+h1{margin:0 0 4px;font-size:28px}
+.muted{color:#aeb8d3}
+.status{margin:20px 0;padding:16px;border-radius:14px;background:#252d49;text-align:center}
+.status strong{font-size:22px}
+.locked{color:#ff9c9c}
+.open{color:#89edbd}
+.count{font-size:40px;font-weight:800;margin-top:4px}
+input,button,select{font:inherit;border-radius:12px;padding:14px;border:1px solid #3d496e;width:100%}
+input,select{margin:6px 0 12px;background:#11172a;color:#fff}
+button{cursor:pointer;background:#8172ff;color:#fff;border:0;font-weight:700;margin-top:8px;min-height:52px}
+button:active{transform:scale(.98)}
+button.secondary{background:#363f60}
+button.danger{background:#c54b61}
+.presets{display:flex;gap:8px;margin:4px 0 8px}
+.presets button{margin-top:0;background:#2c3554}
+label{display:block;margin-top:6px}
+#controls{display:none}
+#message{min-height:24px;color:#ffb7b7;margin:10px 0 0;text-align:center}
+.watch{font-size:13px;color:#8b96b5;text-align:center;margin-top:10px}
+small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
+</style>
+</head>
+<body>
+<main class="card">
+<h1>TV Time</h1>
+<p class="muted">Parent control for the living room TV.</p>
+<section id="setup">
+<label>Roku TV address<input id="host" placeholder="192.168.1.112" autocomplete="off"></label>
+<label>Choose parent PIN<input id="newPin" type="password" inputmode="numeric" placeholder="4–12 digits"></label>
+<button onclick="setup()">Set up &amp; lock TV</button>
+</section>
+<section id="controls">
+<div class="status"><strong id="label"></strong><div class="count" id="countdown"></div></div>
+<div class="presets">
+<button class="secondary" onclick="preset(15)">+15</button>
+<button class="secondary" onclick="preset(30)">+30</button>
+<button class="secondary" onclick="preset(60)">+60</button>
+</div>
+<div class="row"><label>Minutes<input id="minutes" type="number" min="1" max="720" value="30"></label>
+<label>Parent PIN<input id="pin" type="password" inputmode="numeric" autocomplete="off"></label></div>
+<button onclick="bonus()">Add bonus time</button>
+<button class="secondary" onclick="unlock()">Unlock TV (no timer)</button>
+<button class="danger" onclick="lock()">Lock now</button>
+<div class="row"><label>On lock<select id="lockAction"><option value="poweroff">Shut off TV</option><option value="chromecast">Switch to Chromecast</option></select></label></div>
+<button class="secondary" onclick="saveLockMode()">Apply lock mode</button>
+<div id="faceSecure" style="display:none">
+<button class="secondary" onclick="faceSession()">Approve with Face ID (12h)</button>
+<button class="secondary" onclick="enrollFace()">Enroll Face ID on this device</button>
+<button class="secondary" onclick="faceLogout()">End Face ID session</button>
+</div>
+<div class="watch" id="faceStatus"></div>
+<div class="watch" id="faceHint">Face ID needs the https address (home LAN https, or Tailscale away). PIN works everywhere.</div>
+<div class="watch" id="night"></div>
+</section>
+<div id="message"></div>
+<div class="watch" id="watch"></div>
+<small id="foot">On the Roku TV, keep Settings → System → Advanced system settings → Control by mobile apps enabled.</small>
+</main>
+<section class="card" id="configCard">
+<h2>Configuration</h2>
+<p class="muted">Rarely-changed settings. Each save needs the parent PIN.</p>
+<div class="row"><label>Current PIN<input id="curPin" type="password" inputmode="numeric" autocomplete="off"></label><label>New PIN<input id="chgPin" type="password" inputmode="numeric" autocomplete="off"></label></div>
+<button class="secondary" onclick="changePin()">Change parent PIN</button>
+<div class="row"><label>Chromecast HDMI<input id="hdmi" type="number" min="1" max="4" value="3"></label><label>Parent PIN<input id="spin" type="password" inputmode="numeric" autocomplete="off"></label></div>
+<button class="secondary" onclick="saveHdmi()">Save HDMI port</button>
+<div class="row"><label>Away (Tailscale) https URL<input id="awayUrl" placeholder="https://truenas.tailXXXX.ts.net" autocomplete="off"></label></div>
+<button class="secondary" onclick="saveOrigin()">Save away URL</button>
+</section>
+<script>
+let s={};
+const $=id=>document.querySelector('#'+id);
+const msg=t=>$('message').textContent=t;
+async function api(path,data){
+  const r=await fetch('/api/'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});
+  const j=await r.json();
+  if(!r.ok)throw Error(j.error);
+  return j;
+}
+async function refresh(){
+  s=await fetch('/api/state').then(r=>r.json());
+  $('setup').hidden=s.configured;
+  $('controls').style.display=s.configured?'block':'none';
+  $('configCard').style.display=s.configured?'block':'none';
+  if(!s.configured&&s.rokuHost)$('host').value=s.rokuHost;
+  $('lockAction').value=s.lockAction||'poweroff';
+  $('hdmi').value=+((s.chromecastInput||'InputHDMI1').replace('InputHDMI',''))||1;
+  $('awayUrl').value=(s.extraOrigins&&s.extraOrigins[0])||'';
+  const secure=window.isSecureContext&&!!window.PublicKeyCredential;
+  $('faceSecure').style.display=secure?'block':'none';
+  $('faceHint').style.display=secure?'none':'block';
+  $('faceStatus').textContent=s.session?`Face ID session active until ${s.session.expiresAt.slice(11,16)}.`:(secure?'No Face ID session — actions need the PIN.':'');
+  draw();
+}
+function draw(){
+  const sec=s.remainingSeconds||0;
+  const open=!s.locked&&s.mode==='open';
+  $('label').textContent=s.locked?'LOCKED':(open?'OPEN':'WATCHING');
+  $('label').className=s.locked?'locked':'open';
+  $('countdown').textContent=s.locked?'—':(open?'∞':`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`);
+  let w=s.lastAction||'';
+  if(s.watchdog&&s.watchdog.lastAttemptAt){
+    w+=` · guard ${s.watchdog.lastOk?'ok':'retrying'} (${s.watchdog.lastAttemptAt.slice(11,19)})`;
+  }
+  $('watch').textContent=w;
+  $('night').textContent=s.night
+    ? 'Night (10:30pm–8am): locks shut the TV off.'
+    : (s.lockAction==='chromecast' ? 'Daytime: locks switch the TV to Chromecast.' : '');
+  if(s.mode==='timed'&&!s.locked&&sec>0)s.remainingSeconds--;
+}
+async function setup(){
+  try{await api('setup',{rokuHost:$('host').value.trim(),pin:$('newPin').value});msg('Saved — TV locked.');refresh();}
+  catch(e){msg(e.message);}
+}
+async function preset(m){$('minutes').value=m;bonus();}
+async function bonus(){
+  try{s=await api('bonus',{minutes:+$('minutes').value,pin:$('pin').value});$('pin').value='';msg('Time granted.');draw();}
+  catch(e){msg(e.message);}
+}
+async function unlock(){
+  try{s=await api('unlock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction);draw();}
+  catch(e){msg(e.message);}
+}
+async function changePin(){
+  try{await api('pin',{pin:$('curPin').value,newPin:$('chgPin').value});$('curPin').value='';$('chgPin').value='';msg('Parent PIN changed.');refresh();}
+  catch(e){msg(e.message);}
+}
+async function saveLockMode(){
+  try{s=await api('settings',{pin:$('pin').value,lockAction:$('lockAction').value});$('pin').value='';msg('Lock mode saved.');draw();}
+  catch(e){msg(e.message);}
+}
+async function saveHdmi(){
+  try{
+    const n=+ $('hdmi').value;
+    if(!Number.isInteger(n)||n<1||n>4)throw Error('Chromecast HDMI must be 1–4.');
+    s=await api('settings',{pin:$('spin').value,chromecastInput:'InputHDMI'+n});
+    $('spin').value='';msg('HDMI port saved.');draw();
+  }catch(e){msg(e.message);}
+}
+const b64uToBuf=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const b=atob(s);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer;};
+const bufToB64u=b=>{const u=new Uint8Array(b);let s='';for(let i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
+async function faceSession(){
+  try{
+    const o=await api('webauthn/auth/start',{});
+    const a=await navigator.credentials.get({publicKey:{challenge:b64uToBuf(o.challenge),rpId:o.rpId,userVerification:'required',allowCredentials:[{id:b64uToBuf(o.allowCredentialId),type:'public-key'}],timeout:60000}});
+    await api('webauthn/auth/finish',{credentialId:bufToB64u(a.rawId),authenticatorData:bufToB64u(a.response.authenticatorData),clientDataJSON:bufToB64u(a.response.clientDataJSON),signature:bufToB64u(a.response.signature)});
+    msg('Face ID session active for 12h.');refresh();
+  }catch(e){msg('Face ID failed — use PIN: '+(e.message||e));}
+}
+async function enrollFace(){
+  try{
+    const o=await api('webauthn/register/start',{pin:$('pin').value});
+    const c=await navigator.credentials.create({publicKey:{challenge:b64uToBuf(o.challenge),rp:{name:'TV Time',id:o.rpId},user:{id:b64uToBuf(o.userId),name:'parent',displayName:'Parent'},pubKeyCredParams:[{type:'public-key',alg:-7}],authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'},timeout:60000,attestation:'none'}});
+    await api('webauthn/register/finish',{attestationObject:bufToB64u(c.response.attestationObject),clientDataJSON:bufToB64u(c.response.clientDataJSON)});
+    $('pin').value='';msg('Face ID enrolled on this device.');refresh();
+  }catch(e){msg('Enrollment failed: '+(e.message||e));}
+}
+async function faceLogout(){
+  try{await api('webauthn/logout',{});msg('Face ID session ended.');refresh();}
+  catch(e){msg(e.message);}
+}
+async function saveOrigin(){
+  try{
+    const v=$('awayUrl').value.trim();
+    s=await api('settings',{pin:$('spin').value,extraOrigins:v?[v]:[]});
+    $('spin').value='';msg('Away URL saved.');draw();
+  }catch(e){msg(e.message);}
+}
+async function lock(){
+  try{s=await api('lock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction);draw();}
+  catch(e){msg(e.message);}
+}
+refresh();
+setInterval(()=>{draw();if(s.mode==='timed'&&!s.locked&&(s.remainingSeconds||0)<=0)refresh();},1000);
+setInterval(refresh,15000);
+</script>
+</body>
+</html>

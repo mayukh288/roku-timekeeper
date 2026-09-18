@@ -1,0 +1,127 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn } from '../server.js';
+
+const base = {
+  rokuHost: '192.168.1.112',
+  pinSalt: 'salt',
+  pinHash: 'hash',
+  locked: true,
+  expiresAt: null,
+  lastAction: 'Locked by parent',
+  lastWatchdog: null,
+};
+
+describe('unlock-forever (open) mode', () => {
+  it('reports open with null remaining when unlocked and no expiry', () => {
+    const st = computeState({ ...base, locked: false, expiresAt: null });
+    assert.equal(st.locked, false);
+    assert.equal(st.mode, 'open');
+    assert.equal(st.remainingSeconds, null);
+    assert.equal(st.configured, true);
+  });
+
+  it('does not flip an open TV back to locked on zero remaining', () => {
+    // Regression: remainingMs is 0 without a timer, which must not imply locked.
+    const st = computeState({ ...base, locked: false, expiresAt: null });
+    assert.equal(st.locked, false);
+  });
+
+  it('reports timed mode with a countdown while bonus time remains', () => {
+    const st = computeState({ ...base, locked: false, expiresAt: Date.now() + 60_000 });
+    assert.equal(st.locked, false);
+    assert.equal(st.mode, 'timed');
+    assert.ok(st.remainingSeconds >= 59 && st.remainingSeconds <= 60);
+  });
+
+  it('reads locked the moment bonus time hits zero, before the enforcer runs', () => {
+    const st = computeState({ ...base, locked: false, expiresAt: Date.now() - 1000 });
+    assert.equal(st.locked, true);
+    assert.equal(st.mode, 'locked');
+  });
+
+  it('locked wins even with no expiry set', () => {
+    const st = computeState({ ...base, locked: true, expiresAt: null });
+    assert.equal(st.locked, true);
+    assert.equal(st.mode, 'locked');
+  });
+
+  it('unconfigured without a PIN', () => {
+    const st = computeState({ ...base, pinSalt: '', pinHash: '' });
+    assert.equal(st.configured, false);
+  });
+});
+
+describe('parent PIN format (setup and PIN change share this rule)', () => {
+  it('accepts 4–12 digits', () => {
+    assert.equal(validPin('1234'), true);
+    assert.equal(validPin('123456789012'), true);
+  });
+
+  it('rejects short, long, and non-digit PINs', () => {
+    assert.equal(validPin('123'), false);
+    assert.equal(validPin('1234567890123'), false);
+    assert.equal(validPin('12ab'), false);
+    assert.equal(validPin(''), false);
+    assert.equal(validPin(undefined), false);
+  });
+});
+
+describe('lock action (chromecast by day, power off 10:30pm–8am)', () => {
+  const at = (h, m) => new Date(Date.UTC(2026, 5, 15, h, m));
+  const cfg = (over = {}) => ({ lockAction: 'chromecast', chromecastInput: 'InputHDMI2', ...over });
+
+  it('switches to the configured input on a weekday afternoon', () => {
+    assert.equal(lockCommand(cfg(), at(14, 0), 'UTC'), 'InputHDMI2');
+  });
+
+  it('powers off at night even in chromecast mode', () => {
+    assert.equal(lockCommand(cfg(), at(23, 0), 'UTC'), 'PowerOff');
+    assert.equal(lockCommand(cfg(), at(7, 59), 'UTC'), 'PowerOff');
+  });
+
+  it('boundary: 22:29 switches, 22:30 powers off, 08:00 switches', () => {
+    assert.equal(lockCommand(cfg(), at(22, 29), 'UTC'), 'InputHDMI2');
+    assert.equal(lockCommand(cfg(), at(22, 30), 'UTC'), 'PowerOff');
+    assert.equal(lockCommand(cfg(), at(8, 0), 'UTC'), 'InputHDMI2');
+  });
+
+  it('powers off by day in poweroff mode', () => {
+    assert.equal(lockCommand(cfg({ lockAction: 'poweroff' }), at(14, 0), 'UTC'), 'PowerOff');
+  });
+
+  it('falls back to HDMI1 on a bad stored input', () => {
+    assert.equal(lockCommand(cfg({ chromecastInput: 'bogus' }), at(14, 0), 'UTC'), 'InputHDMI1');
+  });
+
+  it('defaults to poweroff when unset', () => {
+    assert.equal(lockCommand({}, at(14, 0), 'UTC'), 'PowerOff');
+  });
+});
+
+describe('wake-then-switch support', () => {
+  it('builds a valid 102-byte magic packet', () => {
+    const pkt = buildWakePacket('01:23:45:67:89:ab');
+    assert.equal(pkt.length, 102);
+    assert.deepEqual([...pkt.slice(0, 6)], [255, 255, 255, 255, 255, 255]);
+    assert.deepEqual([...pkt.slice(6, 12)], [1, 35, 69, 103, 137, 171]);
+    assert.deepEqual([...pkt.slice(96, 102)], [1, 35, 69, 103, 137, 171]);
+  });
+
+  it('rejects malformed MACs', () => {
+    assert.throws(() => buildWakePacket('bogus'), /Invalid MAC/);
+    assert.throws(() => buildWakePacket('01:02:03:04:05'), /Invalid MAC/);
+    assert.throws(() => buildWakePacket('gg:23:45:67:89:ab'), /Invalid MAC/);
+  });
+
+  it('reads power-mode as on / off / unknown', () => {
+    assert.equal(parsePowerMode('<power-mode>PowerOn</power-mode>'), 'PowerOn');
+    assert.equal(tvIsOn('<power-mode>PowerOn</power-mode>'), true);
+    assert.equal(tvIsOn('<power-mode>poweron</power-mode>'), true);
+    assert.equal(tvIsOn('<power-mode>PowerOff</power-mode>'), false);
+    assert.equal(tvIsOn('<power-mode>Standby</power-mode>'), false);
+    assert.equal(tvIsOn('<power-mode>Ready</power-mode>'), false);
+    assert.equal(tvIsOn('<power-mode>DisplayOff</power-mode>'), false);
+    assert.equal(tvIsOn('<device-info></device-info>'), null);
+  });
+});

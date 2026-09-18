@@ -1,0 +1,22 @@
+# Paste this into TrueNAS: Apps > Discover Apps > Custom App menu > Install via YAML.
+# App name: roku-timekeeper
+services:
+  roku-timekeeper:
+    image: docker.io/library/node:22-alpine
+    command: ["node", "/app/server.js"]
+    working_dir: /app
+    restart: unless-stopped
+    ports:
+      - "3030:3030"
+      - "3443:3443"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3030"
+      DATA_DIR: "/data"
+      ROKU_HOST: "192.168.1.112"
+      TIMEZONE: "America/Los_Angeles"
+      WAKE_BROADCAST: "192.168.1.255"
+      WATCHDOG_MS: "10000"
+    volumes:
+      - /mnt/datapool/apps/roku-timekeeper/code:/app:ro
+      - /mnt/datapool/apps/roku-timekeeper/data:/data

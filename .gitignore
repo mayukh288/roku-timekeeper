@@ -1,0 +1,6 @@
+tls-local/
+*.log
+node_modules/
+data/
+settings.json
+.DS_Store
