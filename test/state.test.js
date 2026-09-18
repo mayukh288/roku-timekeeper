@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -249,5 +249,37 @@ describe('night flag follows the configured window, not defaults', () => {
   it('reports night at the same instant under default hours (the old bug)', () => {
     const st = computeState({ ...base }, at, 'UTC');
     assert.equal(st.night, true);
+  });
+});
+
+describe('idle auto-action (unlocked + still for 30 min)', () => {
+  const need = 30 * 60_000;
+  const armed = (over = {}) => ({ locked: false, lockAction: 'chromecast', powerOn: true, idleMs: need + 1000, ...over });
+
+  it('fires after 30 idle minutes, not before', () => {
+    assert.equal(shouldIdleSwitch(armed({ idleMs: need })), true);
+    assert.equal(shouldIdleSwitch(armed({ idleMs: need - 1000 })), false);
+    assert.equal(shouldIdleSwitch(armed({ idleMs: 90 * 60_000 })), true);
+  });
+
+  it('stays off when locked, in poweroff mode, or the TV is off', () => {
+    assert.equal(shouldIdleSwitch(armed({ locked: true })), false);
+    assert.equal(shouldIdleSwitch(armed({ lockAction: 'poweroff' })), false);
+    assert.equal(shouldIdleSwitch(armed({ powerOn: false })), false);
+    assert.equal(shouldIdleSwitch(armed({ powerOn: null })), false);
+  });
+
+  it('spots the screensaver overlay vs a plain app', () => {
+    const withScr = '<active-app><app><id>12</id></app><screensaver><id>555</id></screensaver></active-app>';
+    assert.equal(parseScreensaver(withScr), '555');
+    assert.equal(parseScreensaver('<active-app><app id="tvinput.hdmi3">x</app></active-app>'), null);
+    assert.equal(parseScreensaver(''), null);
+  });
+
+  it('fingerprints playback state and position', () => {
+    assert.equal(parsePlayback('<player state="play"><position>00:01:23</position></player>'), 'play|00:01:23');
+    assert.equal(parsePlayback('<player state="close" error="false"></player>'), 'close|null');
+    assert.equal(parsePlayback(''), null);
+    assert.equal(parsePlayback('<player></player>'), null);
   });
 });

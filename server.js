@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.10';
+const VERSION = '1.7.11';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -33,6 +33,7 @@ let settings = {
   wakeMac: '',
   castStart: '08:00',
   castEnd: '22:30',
+  idle: { lastActiveAt: 0, lastApp: null, lastPosition: null },
   passkeys: {},
   sessions: {},
   extraOrigins: [],
@@ -48,6 +49,8 @@ async function load() {
     settings = { ...settings, ...JSON.parse(await readFile(settingsPath, 'utf8')) };
   }
   if (!settings.rokuHost && defaultRokuHost) settings.rokuHost = defaultRokuHost;
+  // Fresh idle observation after every restart: never auto-act on stale data.
+  settings.idle = { lastActiveAt: Date.now(), lastApp: null, lastPosition: null };
   // Expired while we were down -> boot locked.
   if (settings.expiresAt && Date.now() >= settings.expiresAt) {
     settings.locked = true;
@@ -588,6 +591,32 @@ export function parseActiveApp(xml) {
   return child ? child[1] : null;
 }
 
+export const IDLE_SWITCH_MINUTES = 30;
+
+// Screensaver overlay in query/active-app: the TV put itself to rest.
+// Continued stillness, never activity on its own.
+export function parseScreensaver(xml) {
+  const m = /<screensaver[^>]*>[\s\S]*?<id>([^<]*)<\/id>/i.exec(xml || '');
+  return m ? m[1] : null;
+}
+
+// Best-effort playback fingerprint from query/media-player ("play|00:01:23",
+// "close|null", ...). Null when the query fails or reports nothing usable.
+export function parsePlayback(xml) {
+  if (!xml) return null;
+  const state = /<player[^>]*\bstate="([^"]*)"/i.exec(xml)?.[1] || null;
+  const pos = /<position>([^<]*)<\/position>/i.exec(xml)?.[1]?.trim() || null;
+  if (!state && !pos) return null;
+  return `${state}|${pos}`;
+}
+
+// Idle auto-action gate: unlocked + TV on + still for 30 min. The action itself
+// follows lockCommand(): Chromecast input in-window, PowerOff outside it.
+export function shouldIdleSwitch({ locked, lockAction, powerOn, idleMs, needMs = IDLE_SWITCH_MINUTES * 60_000 }) {
+  if (locked || lockAction !== 'chromecast' || powerOn !== true) return false;
+  return idleMs >= needMs;
+}
+
 // False only when the TV is verifiably on AND already on the wanted input.
 export function shouldEnforceSwitch({ powerOn, activeAppId, wantAppId }) {
   return !(
@@ -688,6 +717,7 @@ async function lockTv(reason) {
   log(`lockTv: ${reason || '(no reason)'} via ${cmd}`);
   settings.locked = true;
   settings.expiresAt = null;
+  touchIdle('locked');
   try {
     const result = await sendLockCommand(cmd);
     settings.lastAction =
@@ -763,6 +793,120 @@ async function watchdog() {
     } catch {
       // Non-fatal; next attempt retries.
     }
+  }
+}
+
+const IDLE_CHECK_MS = Number(process.env.IDLE_CHECK_MS || 60_000);
+let idleBusy = false;
+let lastIdlePower = null;
+let lastIdleSavedAt = 0;
+
+// Someone is actively using the TV (app-side grant/unlock/lock). Restart the
+// idle observation from now; the next tick relearns app + position.
+function touchIdle(reason) {
+  settings.idle = { lastActiveAt: Date.now(), lastApp: null, lastPosition: null };
+  log(`idle: timer reset (${reason})`);
+}
+
+async function saveIdle(force) {
+  const now = Date.now();
+  if (!force && now - lastIdleSavedAt < 5 * 60_000) return;
+  lastIdleSavedAt = now;
+  try {
+    await save();
+  } catch {
+    // Non-fatal; memory state still guards this run.
+  }
+}
+
+// Unlocked idleness: 30 min with no app change, no power cycle and no playback
+// progress -> apply the lock command (Chromecast in-window, PowerOff outside).
+// Never wakes or powers on a TV; only acts on one that is already on.
+async function idleCheck() {
+  if (!settings.pinHash || !validHost(settings.rokuHost) || settings.locked) return;
+  if ((settings.lockAction || 'poweroff') !== 'chromecast') return;
+  if (idleBusy) return;
+  idleBusy = true;
+  try {
+    let infoXml, appXml;
+    try {
+      [infoXml, appXml] = await Promise.all([
+        rokuQuery('query/device-info', 3000),
+        rokuQuery('query/active-app', 3000),
+      ]);
+    } catch (error) {
+      log(`idle: TV unreachable (${error.message}), skipping this round`);
+      return;
+    }
+    const powerOn = tvIsOn(infoXml);
+    if (powerOn !== true) {
+      lastIdlePower = powerOn;
+      return; // Off or unknown: never act, never wake.
+    }
+    if (lastIdlePower === false) {
+      touchIdle('TV turned on');
+      lastIdlePower = true;
+      await saveIdle(true);
+      return;
+    }
+    lastIdlePower = true;
+    let position = null;
+    try {
+      position = parsePlayback(await rokuQuery('query/media-player', 3000));
+    } catch {
+      position = null; // Not all inputs report playback; other signals still apply.
+    }
+    const idle = settings.idle || {};
+    const app = parseActiveApp(appXml);
+    const scr = parseScreensaver(appXml);
+    if (position && idle.lastPosition && position !== idle.lastPosition) {
+      touchIdle('playback progressing');
+      settings.idle.lastPosition = position;
+      await saveIdle(false);
+      return;
+    }
+    if (!scr && app && idle.lastApp && app !== idle.lastApp) {
+      touchIdle(`app ${idle.lastApp} -> ${app}`);
+      settings.idle.lastApp = app;
+      settings.idle.lastPosition = position;
+      await saveIdle(true);
+      return;
+    }
+    if (app && app !== idle.lastApp) {
+      settings.idle.lastApp = app;
+      settings.idle.lastPosition = position;
+      await saveIdle(false);
+    } else if (position !== idle.lastPosition) {
+      settings.idle.lastPosition = position;
+      await saveIdle(false);
+    }
+    const idleMs = Date.now() - (idle.lastActiveAt || Date.now());
+    if (!shouldIdleSwitch({ locked: settings.locked, lockAction: settings.lockAction, powerOn, idleMs })) return;
+    const cmd = lockCommand(settings);
+    if (cmd !== 'PowerOff' && !shouldEnforceSwitch({ powerOn: true, activeAppId: app, wantAppId: tvAppId(cmd) })) {
+      log('idle: already on the Chromecast input, standing down');
+      return;
+    }
+    const mins = Math.round(idleMs / 60_000);
+    log(`idle: no activity for ${mins} min, applying ${cmd}`);
+    try {
+      const result = await sendLockCommand(cmd);
+      settings.lastAction =
+        cmd === 'PowerOff'
+          ? `Idle ${mins} min — TV powered off (outside Chromecast window)`
+          : result && result.skipped
+            ? 'Already on Chromecast — idle'
+            : result && result.confirmed === false
+              ? `Idle ${mins} min — switch sent but TV still on ${result.stillOn || 'unknown input'}, retrying`
+              : `Idle ${mins} min — switched to Chromecast`;
+      touchIdle(`idle ${cmd} applied`);
+    } catch (error) {
+      settings.lastAction = `Idle switch failed: ${error.message}`;
+      log(`idle: ${cmd} FAILED (${error.message})`);
+    }
+    await saveIdle(true);
+  } finally {
+    idleBusy = false;
   }
 }
 
@@ -941,6 +1085,7 @@ async function handleRequest(req, res) {
       settings.locked = false;
       settings.expiresAt = Date.now() + minutes * 60_000;
       settings.lastAction = `${minutes} minute(s) granted`;
+      touchIdle('bonus granted');
       log(`api bonus: granted ${minutes} min, expiresAt=${new Date(settings.expiresAt).toISOString()}`);
       await save();
       return send(res, 200, state());
@@ -949,6 +1094,7 @@ async function handleRequest(req, res) {
       settings.locked = false;
       settings.expiresAt = null;
       settings.lastAction = 'Unlocked by parent — no timer';
+      touchIdle('unlocked');
       log('api unlock: TV unlocked with no expiry (stays on until bonus time or lock)');
       await save();
       return send(res, 200, state());
@@ -1054,4 +1200,5 @@ server.listen(port, host, () => {
   }
   setInterval(enforce, 1000).unref();
   setInterval(watchdog, watchdogMs).unref();
+  setInterval(idleCheck, IDLE_CHECK_MS).unref();
 }
