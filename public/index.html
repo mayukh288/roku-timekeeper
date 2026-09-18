@@ -52,6 +52,7 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <button class="secondary" onclick="preset(30)">+30</button>
 <button class="secondary" onclick="preset(60)">+60</button>
 </div>
+<div class="row"><label>Username<input id="user" autocomplete="username" value="admin"></label></div>
 <div class="row"><label>Minutes<input id="minutes" type="number" min="1" max="720" value="30"></label>
 <label>Parent PIN<input id="pin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
 <button onclick="bonus()">Add bonus time</button>
@@ -78,7 +79,8 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <div class="row"><label>Current PIN<input id="curPin" type="password" inputmode="numeric" autocomplete="current-password"></label><label>New PIN<input id="chgPin" type="password" inputmode="numeric" autocomplete="new-password"></label></div>
 <button class="secondary" onclick="changePin()">Change parent PIN</button>
 <div class="row"><label>Chromecast HDMI<input id="hdmi" type="number" min="1" max="4" value="3"></label><label>Active from<input id="castStart" type="time" value="08:00"></label></div>
-<div class="row"><label>Active to<input id="castEnd" type="time" value="22:30"></label><label>Parent PIN<input id="spin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
+<div class="row"><label>Active to<input id="castEnd" type="time" value="22:30"></label></div>
+<div class="row"><label>Parent PIN<input id="spin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
 <button class="secondary" onclick="saveCast()">Save Chromecast settings</button>
 <div class="row"><label>Away (Tailscale) https URL<input id="awayUrl" placeholder="https://truenas.tailXXXX.ts.net" autocomplete="off"></label></div>
 <button class="secondary" onclick="saveOrigin()">Save away URL</button>
@@ -92,21 +94,24 @@ async function api(path,data){
   try{
     r=await fetch('/api/'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});
   }catch(e){throw Error('Network unreachable — is the server running?');}
-  const j=await r.json();
-  if(!r.ok)throw Error(j.error);
+  const j=await r.json().catch(()=>null);
+  if(!r.ok)throw Error((j&&j.error)||('Request failed (HTTP '+r.status+').'));
   return j;
 }
 async function refresh(){
-  s=await fetch('/api/state').then(r=>r.json());
+  try{s=await fetch('/api/state').then(r=>{if(!r.ok)throw Error('HTTP '+r.status);return r.json();});}
+  catch(e){msg('Cannot reach the server — showing last known state.');return;}
+  if($('message').textContent.startsWith('Cannot reach the server'))$('message').textContent='';
   $('setup').hidden=s.configured;
   $('controls').style.display=s.configured?'block':'none';
   $('configCard').style.display=s.configured?'block':'none';
   if(!s.configured&&s.rokuHost)$('host').value=s.rokuHost;
-  $('lockAction').value=s.lockAction||'poweroff';
-  $('hdmi').value=+((s.chromecastInput||'InputHDMI1').replace('InputHDMI',''))||1;
-  $('awayUrl').value=(s.extraOrigins&&s.extraOrigins[0])||'';
-  $('castStart').value=s.castStart||'08:00';
-  $('castEnd').value=s.castEnd||'22:30';
+  const ae=document.activeElement;
+  if(ae!==$('lockAction'))$('lockAction').value=s.lockAction||'poweroff';
+  if(ae!==$('hdmi'))$('hdmi').value=+((s.chromecastInput||'InputHDMI1').replace('InputHDMI',''))||1;
+  if(ae!==$('awayUrl'))$('awayUrl').value=(s.extraOrigins&&s.extraOrigins[0])||'';
+  if(ae!==$('castStart'))$('castStart').value=s.castStart||'08:00';
+  if(ae!==$('castEnd'))$('castEnd').value=s.castEnd||'22:30';
   const secure=window.isSecureContext&&!!window.PublicKeyCredential;
   $('faceSecure').style.display=secure?'block':'none';
   $('faceHint').style.display=secure?'none':'block';
@@ -153,11 +158,14 @@ async function saveLockMode(){
 }
 async function saveCast(){
   try{
-    const n=+ $('hdmi').value;
+    const n=+$('hdmi').value;
     if(!Number.isInteger(n)||n<1||n>4)throw Error('Chromecast HDMI must be 1–4.');
-    if(!/^\d{2}:\d{2}$/.test($('castStart').value)||!/^\d{2}:\d{2}$/.test($('castEnd').value))throw Error('Window times must be HH:MM.');
-    s=await api('settings',{pin:$('spin').value,chromecastInput:'InputHDMI'+n,castStart:$('castStart').value,castEnd:$('castEnd').value});
-    $('spin').value='';msg('Chromecast settings saved.',true);draw();
+    const cs=$('castStart').value,ce=$('castEnd').value;
+    if(!/^\d{2}:\d{2}$/.test(cs)||!/^\d{2}:\d{2}$/.test(ce))throw Error('Window times must be HH:MM (24h).');
+    s=await api('settings',{pin:$('spin').value,chromecastInput:'InputHDMI'+n,castStart:cs,castEnd:ce});
+    $('spin').value='';await refresh();
+    const hn=(s.chromecastInput||'').replace('InputHDMI','')||String(n);
+    msg(`Chromecast settings saved (HDMI${hn}, ${s.castStart}–${s.castEnd}).`,true);
   }catch(e){msg(e.message);}
 }
 const b64uToBuf=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const b=atob(s);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer;};
@@ -194,8 +202,8 @@ async function lock(){
   catch(e){msg(e.message);}
 }
 refresh();
-setInterval(()=>{draw();if(s.mode==='timed'&&!s.locked&&(s.remainingSeconds||0)<=0)refresh();},1000);
-setInterval(refresh,15000);
+setInterval(()=>{draw();if(s.mode==='timed'&&!s.locked&&(s.remainingSeconds||0)<=0)refresh().catch(()=>{});},1000);
+setInterval(()=>{refresh().catch(()=>{});},15000);
 </script>
 </body>
 </html>
