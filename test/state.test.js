@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -190,5 +190,39 @@ describe('skip wake+switch when already on the input', () => {
       shouldEnforceSwitch({ powerOn: true, activeAppId: null, wantAppId: 'tvinput.hdmi3' }),
       true
     );
+  });
+});
+
+describe('wake MAC learning (mode change while locked must be enforceable)', () => {
+  const info = (net, wifi, eth) =>
+    `<device-info><network-type>${net}</network-type><wifi-mac>${wifi}</wifi-mac><ethernet-mac>${eth}</ethernet-mac><power-mode>PowerOn</power-mode></device-info>`;
+
+  it('prefers the wifi MAC on a wifi connection', () => {
+    assert.equal(extractWakeMac(info('wifi', 'aa:bb:cc:dd:ee:01', 'aa:bb:cc:dd:ee:02')), 'aa:bb:cc:dd:ee:01');
+  });
+
+  it('prefers the ethernet MAC on a wired connection', () => {
+    assert.equal(extractWakeMac(info('ethernet', 'aa:bb:cc:dd:ee:01', 'aa:bb:cc:dd:ee:02')), 'aa:bb:cc:dd:ee:02');
+  });
+
+  it('falls back to whichever MAC is present', () => {
+    assert.equal(extractWakeMac(info('wifi', '', 'aa:bb:cc:dd:ee:02')), 'aa:bb:cc:dd:ee:02');
+    assert.equal(extractWakeMac(info('ethernet', 'aa:bb:cc:dd:ee:01', '')), 'aa:bb:cc:dd:ee:01');
+  });
+
+  it('returns null for missing, malformed, or absent XML', () => {
+    assert.equal(extractWakeMac(info('wifi', '', '')), null);
+    assert.equal(extractWakeMac(info('wifi', 'bogus', '')), null);
+    assert.equal(extractWakeMac('<device-info></device-info>'), null);
+    assert.equal(extractWakeMac(''), null);
+    assert.equal(extractWakeMac(null), null);
+  });
+
+  it('a poweroff-to-chromecast flip is reflected in the next command computed', () => {
+    const at = new Date(Date.UTC(2026, 5, 15, 14, 0));
+    const s = { lockAction: 'poweroff', chromecastInput: 'InputHDMI3' };
+    assert.equal(lockCommand(s, at, 'UTC'), 'PowerOff');
+    s.lockAction = 'chromecast';
+    assert.equal(lockCommand(s, at, 'UTC'), 'InputHDMI3');
   });
 });

@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.6';
+const VERSION = '1.7.7';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -502,16 +502,20 @@ function validMac(mac) {
   return /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(mac || '');
 }
 
-async function ensureWakeMac() {
-  if (validMac(settings.wakeMac)) return settings.wakeMac;
-  const xml = await rokuQuery('query/device-info', 4000);
+export function extractWakeMac(xml) {
+  if (!xml) return null;
   const tag = (name) => {
     const m = new RegExp(`<${name}>\\s*([^<]*)\\s*<\\/${name}>`, 'i').exec(xml);
     return (m ? m[1] : '').trim();
   };
   const net = tag('network-type').toLowerCase();
   const mac = (net === 'wifi' ? tag('wifi-mac') || tag('ethernet-mac') : tag('ethernet-mac') || tag('wifi-mac')) || '';
-  if (!validMac(mac)) throw new Error('Could not learn TV MAC address');
+  return validMac(mac) ? mac : null;
+}
+async function ensureWakeMac() {
+  if (validMac(settings.wakeMac)) return settings.wakeMac;
+  const mac = extractWakeMac(await rokuQuery('query/device-info', 4000));
+  if (!mac) throw new Error('Could not learn TV MAC address');
   settings.wakeMac = mac;
   await save();
   log(`wake: learned TV MAC ${mac}`);
@@ -592,6 +596,12 @@ async function switchToChromecast(cmd) {
     const on = tvIsOn(infoXml);
     const active = parseActiveApp(appXml);
     log(`state check: power-mode=${parsePowerMode(infoXml) || '(unknown)'} active-app=${active || '(unknown)'} want=${want}`);
+    const learned = extractWakeMac(infoXml);
+    if (learned && learned !== settings.wakeMac) {
+      settings.wakeMac = learned;
+      try { await save(); } catch { /* best-effort: enforcement must not fail on persistence */ }
+      log(`wake: learned TV MAC ${learned} during state check`);
+    }
     if (!shouldEnforceSwitch({ powerOn: on, activeAppId: active, wantAppId: want })) {
       log('already on the Chromecast input, skipping wake+switch');
       return { skipped: true };
@@ -609,7 +619,12 @@ async function switchToChromecast(cmd) {
     }
     await sleep(4000);
   }
-  await rokuKey(cmd, 9000);
+  try {
+    await rokuKey(cmd, 9000);
+  } catch (error) {
+    if (needWake) throw new Error(`TV unreachable after wake attempt: ${error.message}`);
+    throw error;
+  }
   return { skipped: false };
 }
 
@@ -879,6 +894,7 @@ async function handleRequest(req, res) {
       return send(res, 200, state());
     }
     if (req.url === '/api/settings') {
+      const beforeLock = { lockAction: settings.lockAction, chromecastInput: settings.chromecastInput, castStart: settings.castStart, castEnd: settings.castEnd };
       if (input.lockAction !== undefined) {
         if (input.lockAction !== 'poweroff' && input.lockAction !== 'chromecast') {
           return send(res, 400, { error: 'lockAction must be poweroff or chromecast.' });
@@ -916,6 +932,11 @@ async function handleRequest(req, res) {
       }
       log(`api settings: lockAction=${settings.lockAction} chromecastInput=${settings.chromecastInput} window=${settings.castStart}-${settings.castEnd}`);
       await save();
+      const lockChanged = beforeLock.lockAction !== settings.lockAction || beforeLock.chromecastInput !== settings.chromecastInput || beforeLock.castStart !== settings.castStart || beforeLock.castEnd !== settings.castEnd;
+      if (lockChanged && settings.locked) {
+        log(`api settings: lock-relevant change while locked, re-enforcing ${lockCommand(settings)}`);
+        void watchdog().catch(() => {});
+      }
       return send(res, 200, state());
     }
     if (req.url === '/api/lock') {
