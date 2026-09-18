@@ -44,6 +44,7 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <label>Roku TV address<input id="host" placeholder="192.168.1.112" autocomplete="off"></label>
 <label>Choose parent PIN<input id="newPin" type="password" inputmode="numeric" placeholder="4–12 digits" autocomplete="new-password"></label>
 <button onclick="setup()">Set up &amp; lock TV</button>
+<div class="watch" id="mSetup"></div>
 </section>
 <section id="controls">
 <div class="status"><strong id="label"></strong><div class="count" id="countdown"></div></div>
@@ -52,18 +53,20 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <button class="secondary" onclick="preset(30)">+30</button>
 <button class="secondary" onclick="preset(60)">+60</button>
 </div>
-<div class="row"><label>Username<input id="user" autocomplete="username" value="admin"></label></div>
 <div class="row"><label>Minutes<input id="minutes" type="number" min="1" max="720" value="30"></label>
 <label>Parent PIN<input id="pin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
 <button onclick="bonus()">Add bonus time</button>
 <button class="secondary" onclick="unlock()">Unlock TV (no timer)</button>
 <button class="danger" onclick="lock()">Lock now</button>
+<div class="watch" id="mMain"></div>
 <div class="row"><label>On lock<select id="lockAction"><option value="poweroff">Shut off TV</option><option value="chromecast">Switch to Chromecast</option></select></label></div>
 <button class="secondary" onclick="saveLockMode()">Apply lock mode</button>
+<div class="watch" id="mLockMode"></div>
 <div id="faceSecure" style="display:none">
 <button class="secondary" onclick="faceSession()">Approve with Face ID (12h)</button>
 <button class="secondary" onclick="enrollFace()">Enroll Face ID on this device</button>
 <button class="secondary" onclick="faceLogout()">End Face ID session</button>
+<div class="watch" id="mFace"></div>
 </div>
 <div class="watch" id="faceStatus"></div>
 <div class="watch" id="faceHint">Face ID needs the https address (home LAN https, or Tailscale away). PIN works everywhere.</div>
@@ -78,17 +81,20 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <p class="muted">Rarely-changed settings. Each save needs the parent PIN.</p>
 <div class="row"><label>Current PIN<input id="curPin" type="password" inputmode="numeric" autocomplete="current-password"></label><label>New PIN<input id="chgPin" type="password" inputmode="numeric" autocomplete="new-password"></label></div>
 <button class="secondary" onclick="changePin()">Change parent PIN</button>
+<div class="watch" id="mPin"></div>
 <div class="row"><label>Chromecast HDMI<input id="hdmi" type="number" min="1" max="4" value="3"></label><label>Active from<input id="castStart" type="time" value="08:00"></label></div>
 <div class="row"><label>Active to<input id="castEnd" type="time" value="22:30"></label></div>
 <div class="row"><label>Parent PIN<input id="spin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
 <button class="secondary" onclick="saveCast()">Save Chromecast settings</button>
+<div class="watch" id="mCast"></div>
 <div class="row"><label>Away (Tailscale) https URL<input id="awayUrl" placeholder="https://truenas.tailXXXX.ts.net" autocomplete="off"></label></div>
 <button class="secondary" onclick="saveOrigin()">Save away URL</button>
+<div class="watch" id="mAway"></div>
 </section>
 <script>
 let s={};
 const $=id=>document.querySelector('#'+id);
-const msg=(t,ok)=>{const m=$('message');m.textContent=t;m.style.color=ok?'#89edbd':'#ffb7b7';};
+const msg=(t,ok,loc)=>{const c=ok?'#89edbd':'#ffb7b7';const m=$('message');m.textContent=t;m.style.color=c;if(loc){const e=$(loc);if(e){e.textContent=t;e.style.color=c;}}};
 async function api(path,data){
   let r;
   try{
@@ -136,25 +142,25 @@ function draw(){
   if(s.mode==='timed'&&!s.locked&&sec>0)s.remainingSeconds--;
 }
 async function setup(){
-  try{await api('setup',{rokuHost:$('host').value.trim(),pin:$('newPin').value});msg('Saved — TV locked.',true);refresh();}
-  catch(e){msg(e.message);}
+  try{await api('setup',{rokuHost:$('host').value.trim(),pin:$('newPin').value});msg('Saved — TV locked.',true,'mSetup');refresh();}
+  catch(e){msg(e.message,false,'mSetup');}
 }
 async function preset(m){$('minutes').value=m;bonus();}
 async function bonus(){
-  try{s=await api('bonus',{minutes:+$('minutes').value,pin:$('pin').value});$('pin').value='';msg('Time granted.',true);draw();}
-  catch(e){msg(e.message);}
+  try{s=await api('bonus',{minutes:+$('minutes').value,pin:$('pin').value});$('pin').value='';msg('Time granted.',true,'mMain');draw();}
+  catch(e){msg(e.message,false,'mMain');}
 }
 async function unlock(){
-  try{s=await api('unlock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction,true);draw();}
-  catch(e){msg(e.message);}
+  try{s=await api('unlock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction,true,'mMain');draw();}
+  catch(e){msg(e.message,false,'mMain');}
 }
 async function changePin(){
-  try{await api('pin',{pin:$('curPin').value,newPin:$('chgPin').value});$('curPin').value='';$('chgPin').value='';msg('Parent PIN changed.',true);refresh();}
-  catch(e){msg(e.message);}
+  try{await api('pin',{pin:$('curPin').value,newPin:$('chgPin').value});$('curPin').value='';$('chgPin').value='';msg('Parent PIN changed.',true,'mPin');refresh();}
+  catch(e){msg(e.message,false,'mPin');}
 }
 async function saveLockMode(){
-  try{s=await api('settings',{pin:$('pin').value,lockAction:$('lockAction').value});$('pin').value='';msg('Lock mode saved.',true);draw();}
-  catch(e){msg(e.message);}
+  try{s=await api('settings',{pin:$('pin').value,lockAction:$('lockAction').value});$('pin').value='';msg('Lock mode saved.',true,'mLockMode');draw();}
+  catch(e){msg(e.message,false,'mLockMode');}
 }
 async function saveCast(){
   try{
@@ -165,8 +171,8 @@ async function saveCast(){
     s=await api('settings',{pin:$('spin').value,chromecastInput:'InputHDMI'+n,castStart:cs,castEnd:ce});
     $('spin').value='';await refresh();
     const hn=(s.chromecastInput||'').replace('InputHDMI','')||String(n);
-    msg(`Chromecast settings saved (HDMI${hn}, ${s.castStart}–${s.castEnd}).`,true);
-  }catch(e){msg(e.message);}
+    msg(`Chromecast settings saved (HDMI${hn}, ${s.castStart}–${s.castEnd}).`,true,'mCast');
+  }catch(e){msg(e.message,false,'mCast');}
 }
 const b64uToBuf=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const b=atob(s);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer;};
 const bufToB64u=b=>{const u=new Uint8Array(b);let s='';for(let i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');};
@@ -175,31 +181,31 @@ async function faceSession(){
     const o=await api('webauthn/auth/start',{});
     const a=await navigator.credentials.get({publicKey:{challenge:b64uToBuf(o.challenge),rpId:o.rpId,userVerification:'required',allowCredentials:[{id:b64uToBuf(o.allowCredentialId),type:'public-key'}],timeout:60000}});
     await api('webauthn/auth/finish',{credentialId:bufToB64u(a.rawId),authenticatorData:bufToB64u(a.response.authenticatorData),clientDataJSON:bufToB64u(a.response.clientDataJSON),signature:bufToB64u(a.response.signature)});
-    msg('Face ID session active for 12h.',true);refresh();
-  }catch(e){msg('Face ID failed — use PIN: '+(e.message||e));}
+    msg('Face ID session active for 12h.',true,'mFace');refresh();
+  }catch(e){msg('Face ID failed — use PIN: '+(e.message||e),false,'mFace');}
 }
 async function enrollFace(){
   try{
     const o=await api('webauthn/register/start',{pin:$('pin').value});
     const c=await navigator.credentials.create({publicKey:{challenge:b64uToBuf(o.challenge),rp:{name:'TV Time',id:o.rpId},user:{id:b64uToBuf(o.userId),name:'parent',displayName:'Parent'},pubKeyCredParams:[{type:'public-key',alg:-7}],authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'},timeout:60000,attestation:'none'}});
     await api('webauthn/register/finish',{attestationObject:bufToB64u(c.response.attestationObject),clientDataJSON:bufToB64u(c.response.clientDataJSON)});
-    $('pin').value='';msg('Face ID enrolled on this device.',true);refresh();
-  }catch(e){msg('Enrollment failed: '+(e.message||e));}
+    $('pin').value='';msg('Face ID enrolled on this device.',true,'mFace');refresh();
+  }catch(e){msg('Enrollment failed: '+(e.message||e),false,'mFace');}
 }
 async function faceLogout(){
-  try{await api('webauthn/logout',{});msg('Face ID session ended.',true);refresh();}
-  catch(e){msg(e.message);}
+  try{await api('webauthn/logout',{});msg('Face ID session ended.',true,'mFace');refresh();}
+  catch(e){msg(e.message,false,'mFace');}
 }
 async function saveOrigin(){
   try{
     const v=$('awayUrl').value.trim();
     s=await api('settings',{pin:$('spin').value,extraOrigins:v?[v]:[]});
-    $('spin').value='';msg('Away URL saved.',true);draw();
-  }catch(e){msg(e.message);}
+    $('spin').value='';msg('Away URL saved.',true,'mAway');draw();
+  }catch(e){msg(e.message,false,'mAway');}
 }
 async function lock(){
-  try{s=await api('lock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction,true);draw();}
-  catch(e){msg(e.message);}
+  try{s=await api('lock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction,true,'mMain');draw();}
+  catch(e){msg(e.message,false,'mMain');}
 }
 refresh();
 setInterval(()=>{draw();if(s.mode==='timed'&&!s.locked&&(s.remainingSeconds||0)<=0)refresh().catch(()=>{});},1000);
