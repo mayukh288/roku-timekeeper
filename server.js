@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.7';
+const VERSION = '1.7.8';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -121,6 +121,13 @@ export function lockCommand(s, now = new Date(), tz = timeZone) {
     return /^InputHDMI[1-4]$/.test(s.chromecastInput) ? s.chromecastInput : 'InputHDMI1';
   }
   return 'PowerOff';
+}
+
+// Explains a PowerOff that happened only because the Chromecast window is closed.
+export function nightSuffix(s, cmd) {
+  return cmd === 'PowerOff' && (s.lockAction || 'poweroff') === 'chromecast'
+    ? ` (night, outside ${s.castStart}–${s.castEnd})`
+    : '';
 }
 
 // ---------- Face ID / passkey (WebAuthn, ES256, platform authenticator) ----------
@@ -673,9 +680,10 @@ async function watchdog() {
   }
   watchdogBusy = true;
   const cmd = lockCommand(settings);
-  log(`watchdog: locked, sending ${cmd}`);
+  const why = nightSuffix(settings, cmd);
+  log(`watchdog: locked, sending ${cmd}${why}`);
   let ok = true;
-  let detail = `${cmd} acknowledged`;
+  let detail = `${cmd} acknowledged${why}`;
   try {
     const result = await sendLockCommand(cmd);
     if (result && result.skipped) detail = 'already on Chromecast input';

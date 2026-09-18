@@ -71,6 +71,7 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <div class="watch" id="faceStatus"></div>
 <div class="watch" id="faceHint">Face ID needs the https address (home LAN https, or Tailscale away). PIN works everywhere.</div>
 <div class="watch" id="night"></div>
+<div class="watch" id="guard"></div>
 </section>
 <div id="message"></div>
 <div class="watch" id="watch"></div>
@@ -94,6 +95,8 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <script>
 let s={};
 const $=id=>document.querySelector('#'+id);
+const dirty=new Set();
+['lockAction','hdmi','awayUrl','castStart','castEnd'].forEach(id=>{const e=$(id);if(e)e.addEventListener('input',()=>dirty.add(id));});
 const msg=(t,ok,loc)=>{const c=ok?'#89edbd':'#ffb7b7';const m=$('message');m.textContent=t;m.style.color=c;if(loc){const e=$(loc);if(e){e.textContent=t;e.style.color=c;}}};
 async function api(path,data){
   let r;
@@ -113,11 +116,11 @@ async function refresh(){
   $('configCard').style.display=s.configured?'block':'none';
   if(!s.configured&&s.rokuHost)$('host').value=s.rokuHost;
   const ae=document.activeElement;
-  if(ae!==$('lockAction'))$('lockAction').value=s.lockAction||'poweroff';
-  if(ae!==$('hdmi'))$('hdmi').value=+((s.chromecastInput||'InputHDMI1').replace('InputHDMI',''))||1;
-  if(ae!==$('awayUrl'))$('awayUrl').value=(s.extraOrigins&&s.extraOrigins[0])||'';
-  if(ae!==$('castStart'))$('castStart').value=s.castStart||'08:00';
-  if(ae!==$('castEnd'))$('castEnd').value=s.castEnd||'22:30';
+  if(ae!==$('lockAction')&&!dirty.has('lockAction'))$('lockAction').value=s.lockAction||'poweroff';
+  if(ae!==$('hdmi')&&!dirty.has('hdmi'))$('hdmi').value=+((s.chromecastInput||'InputHDMI1').replace('InputHDMI',''))||1;
+  if(ae!==$('awayUrl')&&!dirty.has('awayUrl'))$('awayUrl').value=(s.extraOrigins&&s.extraOrigins[0])||'';
+  if(ae!==$('castStart')&&!dirty.has('castStart'))$('castStart').value=s.castStart||'08:00';
+  if(ae!==$('castEnd')&&!dirty.has('castEnd'))$('castEnd').value=s.castEnd||'22:30';
   const secure=window.isSecureContext&&!!window.PublicKeyCredential;
   $('faceSecure').style.display=secure?'block':'none';
   $('faceHint').style.display=secure?'none':'block';
@@ -139,6 +142,8 @@ function draw(){
   $('night').textContent=s.night
     ? `Outside ${cs}–${ce}: locks shut the TV off.`
     : (s.lockAction==='chromecast' ? `Inside ${cs}–${ce}: locks switch the TV to Chromecast.` : '');
+  const g=s.watchdog;
+  $('guard').textContent=g&&g.lastAttemptAt?`Guard ${new Date(g.lastAttemptAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${g.lastDetail||'—'}`:'Guard has not run yet.';
   if(s.mode==='timed'&&!s.locked&&sec>0)s.remainingSeconds--;
 }
 async function setup(){
@@ -159,7 +164,7 @@ async function changePin(){
   catch(e){msg(e.message,false,'mPin');}
 }
 async function saveLockMode(){
-  try{s=await api('settings',{pin:$('pin').value,lockAction:$('lockAction').value});$('pin').value='';msg('Lock mode saved.',true,'mLockMode');draw();}
+  try{s=await api('settings',{pin:$('pin').value,lockAction:$('lockAction').value});$('pin').value='';dirty.delete('lockAction');const note=(s.night&&s.lockAction==='chromecast')?' Currently outside the Chromecast window, so locks shut the TV off.':'';msg(`Lock mode saved.${note}`,true,'mLockMode');draw();}
   catch(e){msg(e.message,false,'mLockMode');}
 }
 async function saveCast(){
@@ -169,9 +174,10 @@ async function saveCast(){
     const cs=$('castStart').value,ce=$('castEnd').value;
     if(!/^\d{2}:\d{2}$/.test(cs)||!/^\d{2}:\d{2}$/.test(ce))throw Error('Window times must be HH:MM (24h).');
     s=await api('settings',{pin:$('spin').value,chromecastInput:'InputHDMI'+n,castStart:cs,castEnd:ce});
-    $('spin').value='';await refresh();
+    $('spin').value='';['hdmi','castStart','castEnd'].forEach(k=>dirty.delete(k));await refresh();
     const hn=(s.chromecastInput||'').replace('InputHDMI','')||String(n);
-    msg(`Chromecast settings saved (HDMI${hn}, ${s.castStart}–${s.castEnd}).`,true,'mCast');
+    const note=(s.night&&s.lockAction==='chromecast')?` Currently outside ${s.castStart}–${s.castEnd}, so locks shut the TV off.`:'';
+    msg(`Chromecast settings saved (HDMI${hn}, ${s.castStart}–${s.castEnd}).${note}`,true,'mCast');
   }catch(e){msg(e.message,false,'mCast');}
 }
 const b64uToBuf=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const b=atob(s);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer;};
@@ -200,7 +206,7 @@ async function saveOrigin(){
   try{
     const v=$('awayUrl').value.trim();
     s=await api('settings',{pin:$('spin').value,extraOrigins:v?[v]:[]});
-    $('spin').value='';msg('Away URL saved.',true,'mAway');draw();
+    $('spin').value='';dirty.delete('awayUrl');msg('Away URL saved.',true,'mAway');draw();
   }catch(e){msg(e.message,false,'mAway');}
 }
 async function lock(){

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -224,5 +224,16 @@ describe('wake MAC learning (mode change while locked must be enforceable)', () 
     assert.equal(lockCommand(s, at, 'UTC'), 'PowerOff');
     s.lockAction = 'chromecast';
     assert.equal(lockCommand(s, at, 'UTC'), 'InputHDMI3');
+  });
+});
+
+describe('night reason in guard status', () => {
+  it('explains a PowerOff that fell back from chromecast mode', () => {
+    assert.equal(nightSuffix({ lockAction: 'chromecast', castStart: '15:00', castEnd: '23:40' }, 'PowerOff'), ' (night, outside 15:00–23:40)');
+  });
+
+  it('stays quiet for a real switch command or poweroff mode', () => {
+    assert.equal(nightSuffix({ lockAction: 'chromecast', castStart: '15:00', castEnd: '23:40' }, 'InputHDMI3'), '');
+    assert.equal(nightSuffix({ lockAction: 'poweroff' }, 'PowerOff'), '');
   });
 });
