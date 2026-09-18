@@ -77,17 +77,21 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <p class="muted">Rarely-changed settings. Each save needs the parent PIN.</p>
 <div class="row"><label>Current PIN<input id="curPin" type="password" inputmode="numeric" autocomplete="off"></label><label>New PIN<input id="chgPin" type="password" inputmode="numeric" autocomplete="off"></label></div>
 <button class="secondary" onclick="changePin()">Change parent PIN</button>
-<div class="row"><label>Chromecast HDMI<input id="hdmi" type="number" min="1" max="4" value="3"></label><label>Parent PIN<input id="spin" type="password" inputmode="numeric" autocomplete="off"></label></div>
-<button class="secondary" onclick="saveHdmi()">Save HDMI port</button>
+<div class="row"><label>Chromecast HDMI<input id="hdmi" type="number" min="1" max="4" value="3"></label><label>Active from<input id="castStart" type="time" value="08:00"></label></div>
+<div class="row"><label>Active to<input id="castEnd" type="time" value="22:30"></label><label>Parent PIN<input id="spin" type="password" inputmode="numeric" autocomplete="off"></label></div>
+<button class="secondary" onclick="saveCast()">Save Chromecast settings</button>
 <div class="row"><label>Away (Tailscale) https URL<input id="awayUrl" placeholder="https://truenas.tailXXXX.ts.net" autocomplete="off"></label></div>
 <button class="secondary" onclick="saveOrigin()">Save away URL</button>
 </section>
 <script>
 let s={};
 const $=id=>document.querySelector('#'+id);
-const msg=t=>$('message').textContent=t;
+const msg=(t,ok)=>{const m=$('message');m.textContent=t;m.style.color=ok?'#89edbd':'#ffb7b7';};
 async function api(path,data){
-  const r=await fetch('/api/'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});
+  let r;
+  try{
+    r=await fetch('/api/'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});
+  }catch(e){throw Error('Network unreachable — is the server running?');}
   const j=await r.json();
   if(!r.ok)throw Error(j.error);
   return j;
@@ -101,6 +105,8 @@ async function refresh(){
   $('lockAction').value=s.lockAction||'poweroff';
   $('hdmi').value=+((s.chromecastInput||'InputHDMI1').replace('InputHDMI',''))||1;
   $('awayUrl').value=(s.extraOrigins&&s.extraOrigins[0])||'';
+  $('castStart').value=s.castStart||'08:00';
+  $('castEnd').value=s.castEnd||'22:30';
   const secure=window.isSecureContext&&!!window.PublicKeyCredential;
   $('faceSecure').style.display=secure?'block':'none';
   $('faceHint').style.display=secure?'none':'block';
@@ -118,38 +124,40 @@ function draw(){
     w+=` · guard ${s.watchdog.lastOk?'ok':'retrying'} (${s.watchdog.lastAttemptAt.slice(11,19)})`;
   }
   $('watch').textContent=w;
+  const cs=s.castStart||'08:00', ce=s.castEnd||'22:30';
   $('night').textContent=s.night
-    ? 'Night (10:30pm–8am): locks shut the TV off.'
-    : (s.lockAction==='chromecast' ? 'Daytime: locks switch the TV to Chromecast.' : '');
+    ? `Outside ${cs}–${ce}: locks shut the TV off.`
+    : (s.lockAction==='chromecast' ? `Inside ${cs}–${ce}: locks switch the TV to Chromecast.` : '');
   if(s.mode==='timed'&&!s.locked&&sec>0)s.remainingSeconds--;
 }
 async function setup(){
-  try{await api('setup',{rokuHost:$('host').value.trim(),pin:$('newPin').value});msg('Saved — TV locked.');refresh();}
+  try{await api('setup',{rokuHost:$('host').value.trim(),pin:$('newPin').value});msg('Saved — TV locked.',true);refresh();}
   catch(e){msg(e.message);}
 }
 async function preset(m){$('minutes').value=m;bonus();}
 async function bonus(){
-  try{s=await api('bonus',{minutes:+$('minutes').value,pin:$('pin').value});$('pin').value='';msg('Time granted.');draw();}
+  try{s=await api('bonus',{minutes:+$('minutes').value,pin:$('pin').value});$('pin').value='';msg('Time granted.',true);draw();}
   catch(e){msg(e.message);}
 }
 async function unlock(){
-  try{s=await api('unlock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction);draw();}
+  try{s=await api('unlock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction,true);draw();}
   catch(e){msg(e.message);}
 }
 async function changePin(){
-  try{await api('pin',{pin:$('curPin').value,newPin:$('chgPin').value});$('curPin').value='';$('chgPin').value='';msg('Parent PIN changed.');refresh();}
+  try{await api('pin',{pin:$('curPin').value,newPin:$('chgPin').value});$('curPin').value='';$('chgPin').value='';msg('Parent PIN changed.',true);refresh();}
   catch(e){msg(e.message);}
 }
 async function saveLockMode(){
-  try{s=await api('settings',{pin:$('pin').value,lockAction:$('lockAction').value});$('pin').value='';msg('Lock mode saved.');draw();}
+  try{s=await api('settings',{pin:$('pin').value,lockAction:$('lockAction').value});$('pin').value='';msg('Lock mode saved.',true);draw();}
   catch(e){msg(e.message);}
 }
-async function saveHdmi(){
+async function saveCast(){
   try{
     const n=+ $('hdmi').value;
     if(!Number.isInteger(n)||n<1||n>4)throw Error('Chromecast HDMI must be 1–4.');
-    s=await api('settings',{pin:$('spin').value,chromecastInput:'InputHDMI'+n});
-    $('spin').value='';msg('HDMI port saved.');draw();
+    if(!/^\d{2}:\d{2}$/.test($('castStart').value)||!/^\d{2}:\d{2}$/.test($('castEnd').value))throw Error('Window times must be HH:MM.');
+    s=await api('settings',{pin:$('spin').value,chromecastInput:'InputHDMI'+n,castStart:$('castStart').value,castEnd:$('castEnd').value});
+    $('spin').value='';msg('Chromecast settings saved.',true);draw();
   }catch(e){msg(e.message);}
 }
 const b64uToBuf=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const b=atob(s);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer;};
@@ -159,7 +167,7 @@ async function faceSession(){
     const o=await api('webauthn/auth/start',{});
     const a=await navigator.credentials.get({publicKey:{challenge:b64uToBuf(o.challenge),rpId:o.rpId,userVerification:'required',allowCredentials:[{id:b64uToBuf(o.allowCredentialId),type:'public-key'}],timeout:60000}});
     await api('webauthn/auth/finish',{credentialId:bufToB64u(a.rawId),authenticatorData:bufToB64u(a.response.authenticatorData),clientDataJSON:bufToB64u(a.response.clientDataJSON),signature:bufToB64u(a.response.signature)});
-    msg('Face ID session active for 12h.');refresh();
+    msg('Face ID session active for 12h.',true);refresh();
   }catch(e){msg('Face ID failed — use PIN: '+(e.message||e));}
 }
 async function enrollFace(){
@@ -167,22 +175,22 @@ async function enrollFace(){
     const o=await api('webauthn/register/start',{pin:$('pin').value});
     const c=await navigator.credentials.create({publicKey:{challenge:b64uToBuf(o.challenge),rp:{name:'TV Time',id:o.rpId},user:{id:b64uToBuf(o.userId),name:'parent',displayName:'Parent'},pubKeyCredParams:[{type:'public-key',alg:-7}],authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'},timeout:60000,attestation:'none'}});
     await api('webauthn/register/finish',{attestationObject:bufToB64u(c.response.attestationObject),clientDataJSON:bufToB64u(c.response.clientDataJSON)});
-    $('pin').value='';msg('Face ID enrolled on this device.');refresh();
+    $('pin').value='';msg('Face ID enrolled on this device.',true);refresh();
   }catch(e){msg('Enrollment failed: '+(e.message||e));}
 }
 async function faceLogout(){
-  try{await api('webauthn/logout',{});msg('Face ID session ended.');refresh();}
+  try{await api('webauthn/logout',{});msg('Face ID session ended.',true);refresh();}
   catch(e){msg(e.message);}
 }
 async function saveOrigin(){
   try{
     const v=$('awayUrl').value.trim();
     s=await api('settings',{pin:$('spin').value,extraOrigins:v?[v]:[]});
-    $('spin').value='';msg('Away URL saved.');draw();
+    $('spin').value='';msg('Away URL saved.',true);draw();
   }catch(e){msg(e.message);}
 }
 async function lock(){
-  try{s=await api('lock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction);draw();}
+  try{s=await api('lock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction,true);draw();}
   catch(e){msg(e.message);}
 }
 refresh();

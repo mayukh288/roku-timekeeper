@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -139,6 +139,30 @@ describe('skip wake+switch when already on the input', () => {
     );
     assert.equal(parseActiveApp('<app><id>tvinput.hdmi1</id></app>'), 'tvinput.hdmi1');
     assert.equal(parseActiveApp('<active-app></active-app>'), null);
+  });
+
+  it('parses HH:MM window bounds', () => {
+    assert.equal(parseHM('08:00'), 480);
+    assert.equal(parseHM('22:30'), 1350);
+    assert.equal(parseHM('24:00'), null);
+    assert.equal(parseHM('8:00'), null);
+    assert.equal(parseHM(''), null);
+    assert.equal(parseHM(undefined), null);
+  });
+
+  it('handles day and overnight windows', () => {
+    assert.equal(minutesInWindow(14 * 60, 480, 1350), true);
+    assert.equal(minutesInWindow(23 * 60, 480, 1350), false);
+    assert.equal(minutesInWindow(23 * 60, 1200, 120), true);
+    assert.equal(minutesInWindow(3 * 60, 1200, 120), false);
+    assert.equal(minutesInWindow(12 * 60, 1200, 120), false);
+  });
+
+  it('follows a custom chromecast window', () => {
+    const at = (h, m) => new Date(Date.UTC(2026, 5, 15, h, m));
+    const cfg = { lockAction: 'chromecast', chromecastInput: 'InputHDMI2', castStart: '09:00', castEnd: '10:00' };
+    assert.equal(lockCommand(cfg, at(9, 30), 'UTC'), 'InputHDMI2');
+    assert.equal(lockCommand(cfg, at(14, 0), 'UTC'), 'PowerOff');
   });
 
   it('skips only when verifiably on the wanted input', () => {

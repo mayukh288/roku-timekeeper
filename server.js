@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.0';
+const VERSION = '1.7.2';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -31,6 +31,8 @@ let settings = {
   lockAction: 'poweroff',
   chromecastInput: 'InputHDMI1',
   wakeMac: '',
+  castStart: '08:00',
+  castEnd: '22:30',
   passkeys: {},
   sessions: {},
   extraOrigins: [],
@@ -84,10 +86,22 @@ const publicHost = process.env.PUBLIC_HOST || '192.168.1.107';
 const SESSION_TTL_MS = 12 * 3600 * 1000;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const pendingChallenges = new Map();
-const NIGHT_START_MINS = 22 * 60 + 30;
-const NIGHT_END_MINS = 8 * 60;
+export const DEFAULT_CAST_START = '08:00';
+export const DEFAULT_CAST_END = '22:30';
 
-export function isNight(d = new Date(), tz = timeZone) {
+export function parseHM(s) {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(s || '');
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+export function minutesInWindow(mins, start, end) {
+  if (start <= end) return mins >= start && mins < end;
+  return mins >= start || mins < end;
+}
+
+// "Night" = outside the Chromecast window (default 10:30pm–8am).
+export function isNight(d = new Date(), tz = timeZone, startHM = DEFAULT_CAST_START, endHM = DEFAULT_CAST_END) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: tz,
     hour: '2-digit',
@@ -96,12 +110,14 @@ export function isNight(d = new Date(), tz = timeZone) {
   }).formatToParts(d);
   const num = (t) => Number(parts.find((p) => p.type === t).value);
   const mins = (num('hour') % 24) * 60 + num('minute');
-  return mins >= NIGHT_START_MINS || mins < NIGHT_END_MINS;
+  const start = parseHM(startHM) ?? parseHM(DEFAULT_CAST_START);
+  const end = parseHM(endHM) ?? parseHM(DEFAULT_CAST_END);
+  return !minutesInWindow(mins, start, end);
 }
 
-// Daytime chromecast locks switch the input; night (10:30pm–8am) always powers off.
+// Chromecast locks switch the input while inside the window; outside always powers off.
 export function lockCommand(s, now = new Date(), tz = timeZone) {
-  if ((s.lockAction || 'poweroff') === 'chromecast' && !isNight(now, tz)) {
+  if ((s.lockAction || 'poweroff') === 'chromecast' && !isNight(now, tz, s.castStart, s.castEnd)) {
     return /^InputHDMI[1-4]$/.test(s.chromecastInput) ? s.chromecastInput : 'InputHDMI1';
   }
   return 'PowerOff';
@@ -679,6 +695,8 @@ export function computeState(s) {
     chromecastInput: /^InputHDMI[1-4]$/.test(s.chromecastInput) ? s.chromecastInput : 'InputHDMI1',
     night: isNight(),
     extraOrigins: Array.isArray(s.extraOrigins) ? s.extraOrigins : [],
+    castStart: parseHM(s.castStart) === null ? DEFAULT_CAST_START : s.castStart,
+    castEnd: parseHM(s.castEnd) === null ? DEFAULT_CAST_END : s.castEnd,
     remainingSeconds: hasTimer ? Math.ceil(remainingMs / 1000) : null,
     lastAction: s.lastAction,
     watchdog: {
@@ -888,7 +906,15 @@ async function handleRequest(req, res) {
         if (bad) return send(res, 400, { error: 'extraOrigins must be up to 5 https URLs.' });
         settings.extraOrigins = list;
       }
-      log(`api settings: lockAction=${settings.lockAction} chromecastInput=${settings.chromecastInput}`);
+      for (const key of ['castStart', 'castEnd']) {
+        if (input[key] !== undefined) {
+          if (parseHM(input[key]) === null) {
+            return send(res, 400, { error: 'Cast window times must be HH:MM (24h).' });
+          }
+          settings[key] = input[key];
+        }
+      }
+      log(`api settings: lockAction=${settings.lockAction} chromecastInput=${settings.chromecastInput} window=${settings.castStart}-${settings.castEnd}`);
       await save();
       return send(res, 200, state());
     }
