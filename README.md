@@ -7,7 +7,7 @@ shuts off even if the parent's iPhone is off or away.
 
 - iPhone (over Tailscale) → `http://192.168.1.107:3030` → TrueNAS container → Roku TV (`192.168.1.112:8060`)
 - Grant 1–720 bonus minutes with the parent PIN; on expiry the server sends Roku `PowerOff`.
-- While locked, a watchdog re-sends the lock command every 10s, so the physical remote only buys a few seconds.
+- While locked, a guard senses the TV about every second and fires the lock command the moment it is out of its desired state, so the physical remote only buys a couple of seconds.
 - Daytime locks can switch the TV to the Chromecast HDMI instead of powering off; outside the
   Chromecast window (default 08:00–22:30, i.e. night is 10:30pm–8am) locks always power off.
   Toggle it in the dashboard (needs PIN), set the Chromecast HDMI port and the active window

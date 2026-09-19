@@ -7,13 +7,15 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.11';
+const VERSION = '1.7.12';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
 const dataDir = process.env.DATA_DIR || root;
 const defaultRokuHost = process.env.ROKU_HOST || '';
-const watchdogMs = Number(process.env.WATCHDOG_MS || 10_000);
+// 1s sense cadence: reaction is action-bound (keypress + verify takes ~1s+),
+// so sub-second polling only loads the TV's fragile ECP stack for no gain.
+const watchdogMs = Number(process.env.WATCHDOG_MS || 1_000);
 
 const settingsPath = join(dataDir, 'settings.json');
 
@@ -628,6 +630,14 @@ export function shouldEnforceSwitch({ powerOn, activeAppId, wantAppId }) {
   );
 }
 
+// Locked-guard decision: act immediately on any sighting outside the desired
+// state. PowerOff fires only when the TV is verifiably on (a live app listing
+// counts even if the power field is missing); a switch defers to the skip rule.
+export function lockedNeedsAction({ cmd, powerOn, activeAppId, wantAppId }) {
+  if (cmd === 'PowerOff') return powerOn === true || (powerOn === null && !!activeAppId);
+  return shouldEnforceSwitch({ powerOn, activeAppId, wantAppId });
+}
+
 // Chromecast lock: verify state first; wake + switch only when needed.
 // Returns { skipped: true } when the TV is already on the wanted input.
 async function switchToChromecast(cmd) {
@@ -743,10 +753,12 @@ async function enforce() {
   }
 }
 
-// Locked-state watchdog: while locked, keep sending PowerOff so the physical
-// remote only buys a few seconds. An unpowered TV just refuses connections
-// until it is reachable again.
+// Locked-state guard: fast sense + immediate action. While locked, every tick
+// reads the TV's actual power/app state, and any sighting outside the desired
+// state fires the lock command right away instead of waiting for the next
+// cycle — the physical remote only buys a couple of seconds.
 let watchdogBusy = false;
+let lastWatchdogLogged = '';
 async function watchdog() {
   if (!settings.pinHash || !validHost(settings.rokuHost) || !settings.locked) return;
   if (watchdogBusy) {
@@ -754,35 +766,68 @@ async function watchdog() {
     return;
   }
   watchdogBusy = true;
+  // Quiet ticks dedup: at 1s cadence, only log a stand-down once until an
+  // action fires (which resets this so the return to standby is visible).
+  const quiet = (t) => { if (t !== lastWatchdogLogged) { log(t); lastWatchdogLogged = t; } };
   const cmd = lockCommand(settings);
   const why = nightSuffix(settings, cmd);
-  log(`watchdog: locked, sending ${cmd}${why}`);
+  const want = cmd === 'PowerOff' ? null : tvAppId(cmd);
+  let infoXml = null;
+  let appXml = null;
+  let senseOk = false;
+  try {
+    [infoXml, appXml] = await Promise.all([
+      rokuQuery('query/device-info', 2500),
+      rokuQuery('query/active-app', 2500),
+    ]);
+    senseOk = true;
+    const learned = extractWakeMac(infoXml);
+    if (learned && learned !== settings.wakeMac) {
+      settings.wakeMac = learned;
+      try { await save(); } catch { /* best-effort */ }
+      log(`wake: learned TV MAC ${learned} during sense`);
+    }
+  } catch (error) {
+    quiet(`watchdog: sense failed (${error.message})`);
+  }
+  const powerOn = senseOk ? tvIsOn(infoXml) : null;
+  const active = senseOk ? parseActiveApp(appXml) : null;
   let ok = true;
   let code = null;
   let detail = `${cmd} acknowledged${why}`;
-  try {
-    const result = await sendLockCommand(cmd);
-    if (result && result.skipped) {
-      detail = 'already on Chromecast input';
-    } else if (cmd === 'PowerOff') {
-      code = result.ecp;
-      detail = `PowerOff acknowledged${why}`;
-    } else if (result && result.confirmed) {
-      code = result.ecp;
-      detail = `${cmd} confirmed`;
-    } else if (result && result.confirmed === false) {
-      code = result.ecp ?? null;
-      detail = `${cmd} sent, TV still on ${result.stillOn || 'unknown input'} — retrying`;
-    } else {
-      code = (result && result.ecp) ?? null;
-      detail = `${cmd} sent, could not verify — retrying`;
+  if (senseOk && !lockedNeedsAction({ cmd, powerOn, activeAppId: active, wantAppId: want })) {
+    detail = cmd === 'PowerOff' ? 'TV off — standing by' : 'already on Chromecast input';
+    quiet(`watchdog: ${detail}`);
+  } else if (!senseOk && cmd === 'PowerOff') {
+    detail = 'TV unreachable, presumed off';
+    quiet(`watchdog: ${detail}`);
+  } else {
+    lastWatchdogLogged = '';
+    log(`watchdog: out of desired state (power=${powerOn}, app=${active || 'unknown'}), sending ${cmd}${why} immediately`);
+    try {
+      const result = await sendLockCommand(cmd);
+      if (result && result.skipped) {
+        detail = 'already on Chromecast input';
+      } else if (cmd === 'PowerOff') {
+        code = result.ecp;
+        detail = `PowerOff acknowledged${why}`;
+      } else if (result && result.confirmed) {
+        code = result.ecp;
+        detail = `${cmd} confirmed`;
+      } else if (result && result.confirmed === false) {
+        code = result.ecp ?? null;
+        detail = `${cmd} sent, TV still on ${result.stillOn || 'unknown input'} — retrying`;
+      } else {
+        code = (result && result.ecp) ?? null;
+        detail = `${cmd} sent, could not verify — retrying`;
+      }
+    } catch (error) {
+      ok = false;
+      code = errCode(error);
+      detail = `${error.message || 'request failed'}${code ? ` (code ${code})` : ''}`;
     }
-  } catch (error) {
-    ok = false;
-    code = errCode(error);
-    detail = `${error.message || 'request failed'}${code ? ` (code ${code})` : ''}`;
+    log(ok ? `watchdog result: ${detail}` : `watchdog result: no ack (${detail})`);
   }
-  log(ok ? `watchdog result: ${detail}` : `watchdog result: no ack (${detail})`);
   settings.lastWatchdog = { at: new Date().toISOString(), ok, cmd, code, detail };
   watchdogBusy = false;
   const stamp = ok ? 'ok' : `fail:${detail}`;

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -281,5 +281,24 @@ describe('idle auto-action (unlocked + still for 30 min)', () => {
     assert.equal(parsePlayback('<player state="close" error="false"></player>'), 'close|null');
     assert.equal(parsePlayback(''), null);
     assert.equal(parsePlayback('<player></player>'), null);
+  });
+});
+
+describe('locked guard sense-and-act (anti remote jailbreak)', () => {
+  it('powers off the instant the TV is sighted on', () => {
+    assert.equal(lockedNeedsAction({ cmd: 'PowerOff', powerOn: true }), true);
+    assert.equal(lockedNeedsAction({ cmd: 'PowerOff', powerOn: false }), false);
+  });
+
+  it('powers off on a live app listing even with no power field', () => {
+    assert.equal(lockedNeedsAction({ cmd: 'PowerOff', powerOn: null, activeAppId: 'tvinput.hdmi1' }), true);
+    assert.equal(lockedNeedsAction({ cmd: 'PowerOff', powerOn: null, activeAppId: null }), false);
+  });
+
+  it('re-switches the instant the input moves off Chromecast', () => {
+    const want = 'tvinput.hdmi3';
+    assert.equal(lockedNeedsAction({ cmd: 'InputHDMI3', powerOn: true, activeAppId: 'tvinput.hdmi1', wantAppId: want }), true);
+    assert.equal(lockedNeedsAction({ cmd: 'InputHDMI3', powerOn: true, activeAppId: want, wantAppId: want }), false);
+    assert.equal(lockedNeedsAction({ cmd: 'InputHDMI3', powerOn: false, activeAppId: null, wantAppId: want }), true);
   });
 });
