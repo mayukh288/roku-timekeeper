@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.12';
+const VERSION = '1.7.13';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -1222,6 +1222,7 @@ export const isMain =
 if (isMain) {
 server.listen(port, host, () => {
   console.log(`Roku Timekeeper v${VERSION} on http://${host}:${port}`);
+  if (watchdogMs > 5000) log(`warning: WATCHDOG_MS=${watchdogMs} slows locked-guard reaction; set 1000 for ~1s sensing`);
   log(
     `startup: rokuHost=${settings.rokuHost || '(none)'} locked=${settings.locked} ` +
       `expiresAt=${settings.expiresAt ? new Date(settings.expiresAt).toISOString() : 'none'} ` +
