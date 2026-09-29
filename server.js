@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.13';
+const VERSION = '1.7.14';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -35,6 +35,7 @@ let settings = {
   wakeMac: '',
   castStart: '08:00',
   castEnd: '22:30',
+  watcher: '',
   idle: { lastActiveAt: 0, lastApp: null, lastPosition: null },
   passkeys: {},
   sessions: {},
@@ -94,6 +95,12 @@ const pendingChallenges = new Map();
 export const DEFAULT_CAST_START = '08:00';
 export const DEFAULT_CAST_END = '22:30';
 
+// Optional "whose turn" name: undefined = not sent (leave unchanged),
+// otherwise trimmed to 40 chars (empty string clears it).
+export function normalizeWatcher(v) {
+  if (v === undefined || v === null) return undefined;
+  return String(v).trim().slice(0, 40);
+}
 export function parseHM(s) {
   const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(s || '');
   if (!m) return null;
@@ -727,6 +734,7 @@ async function lockTv(reason) {
   log(`lockTv: ${reason || '(no reason)'} via ${cmd}`);
   settings.locked = true;
   settings.expiresAt = null;
+  settings.watcher = '';
   touchIdle('locked');
   try {
     const result = await sendLockCommand(cmd);
@@ -965,6 +973,7 @@ export function computeState(s, now = new Date(), tz = timeZone) {
     locked,
     mode: locked ? 'locked' : hasTimer ? 'timed' : 'open',
     lockAction: s.lockAction || 'poweroff',
+    watcher: s.watcher || '',
     chromecastInput: /^InputHDMI[1-4]$/.test(s.chromecastInput) ? s.chromecastInput : 'InputHDMI1',
     night: isNight(now, tz, s.castStart, s.castEnd),
     extraOrigins: Array.isArray(s.extraOrigins) ? s.extraOrigins : [],
@@ -1129,7 +1138,9 @@ async function handleRequest(req, res) {
       }
       settings.locked = false;
       settings.expiresAt = Date.now() + minutes * 60_000;
-      settings.lastAction = `${minutes} minute(s) granted`;
+      const watcher = normalizeWatcher(input.watcher);
+      if (watcher !== undefined) settings.watcher = watcher;
+      settings.lastAction = `${minutes} minute(s) granted${settings.watcher ? ` (${settings.watcher})` : ''}`;
       touchIdle('bonus granted');
       log(`api bonus: granted ${minutes} min, expiresAt=${new Date(settings.expiresAt).toISOString()}`);
       await save();
@@ -1138,7 +1149,9 @@ async function handleRequest(req, res) {
     if (req.url === '/api/unlock') {
       settings.locked = false;
       settings.expiresAt = null;
-      settings.lastAction = 'Unlocked by parent — no timer';
+      const watcher = normalizeWatcher(input.watcher);
+      if (watcher !== undefined) settings.watcher = watcher;
+      settings.lastAction = `Unlocked by parent — no timer${settings.watcher ? ` (${settings.watcher})` : ''}`;
       touchIdle('unlocked');
       log('api unlock: TV unlocked with no expiry (stays on until bonus time or lock)');
       await save();

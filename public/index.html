@@ -55,6 +55,7 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 </div>
 <div class="row"><label>Minutes<input id="minutes" type="number" min="1" max="720" value="30"></label>
 <label>Parent PIN<input id="pin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
+<div class="row"><label>Watching now (optional)<input id="watcher" maxlength="40" placeholder="Name" autocomplete="off"></label></div>
 <button onclick="bonus()">Add bonus time</button>
 <button class="secondary" onclick="unlock()">Unlock TV (no timer)</button>
 <button class="danger" onclick="lock()">Lock now</button>
@@ -96,7 +97,7 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 let s={};
 const $=id=>document.querySelector('#'+id);
 const dirty=new Set();
-['lockAction','hdmi','awayUrl','castStart','castEnd'].forEach(id=>{const e=$(id);if(e)e.addEventListener('input',()=>dirty.add(id));});
+['lockAction','hdmi','awayUrl','castStart','castEnd','watcher'].forEach(id=>{const e=$(id);if(e)e.addEventListener('input',()=>dirty.add(id));});
 const msg=(t,ok,loc)=>{const c=ok?'#89edbd':'#ffb7b7';const m=$('message');m.textContent=t;m.style.color=c;if(loc){const e=$(loc);if(e){e.textContent=t;e.style.color=c;}}};
 async function api(path,data){
   let r;
@@ -121,6 +122,7 @@ async function refresh(){
   if(ae!==$('awayUrl')&&!dirty.has('awayUrl'))$('awayUrl').value=(s.extraOrigins&&s.extraOrigins[0])||'';
   if(ae!==$('castStart')&&!dirty.has('castStart'))$('castStart').value=s.castStart||'08:00';
   if(ae!==$('castEnd')&&!dirty.has('castEnd'))$('castEnd').value=s.castEnd||'22:30';
+  if(ae!==$('watcher')&&!dirty.has('watcher'))$('watcher').value=s.watcher||'';
   const secure=window.isSecureContext&&!!window.PublicKeyCredential;
   $('faceSecure').style.display=secure?'block':'none';
   $('faceHint').style.display=secure?'none':'block';
@@ -130,7 +132,7 @@ async function refresh(){
 function draw(){
   const sec=s.remainingSeconds||0;
   const open=!s.locked&&s.mode==='open';
-  $('label').textContent=s.locked?'LOCKED':(open?'OPEN':'WATCHING');
+  $('label').textContent=s.locked?'LOCKED':((open?'OPEN':'WATCHING')+(s.watcher?` · ${s.watcher}`:''));
   $('label').className=s.locked?'locked':'open';
   $('countdown').textContent=s.locked?'—':(open?'∞':`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`);
   let w=s.lastAction||'';
@@ -152,11 +154,11 @@ async function setup(){
 }
 async function preset(m){$('minutes').value=m;bonus();}
 async function bonus(){
-  try{s=await api('bonus',{minutes:+$('minutes').value,pin:$('pin').value});$('pin').value='';msg('Time granted.',true,'mMain');draw();}
+  try{s=await api('bonus',{minutes:+$('minutes').value,pin:$('pin').value,watcher:$('watcher').value});$('pin').value='';dirty.delete('watcher');msg('Time granted.',true,'mMain');draw();}
   catch(e){msg(e.message,false,'mMain');}
 }
 async function unlock(){
-  try{s=await api('unlock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction,true,'mMain');draw();}
+  try{s=await api('unlock',{pin:$('pin').value,watcher:$('watcher').value});$('pin').value='';dirty.delete('watcher');msg(s.lastAction,true,'mMain');draw();}
   catch(e){msg(e.message,false,'mMain');}
 }
 async function changePin(){
@@ -210,7 +212,7 @@ async function saveOrigin(){
   }catch(e){msg(e.message,false,'mAway');}
 }
 async function lock(){
-  try{s=await api('lock',{pin:$('pin').value});$('pin').value='';msg(s.lastAction,true,'mMain');draw();}
+  try{s=await api('lock',{pin:$('pin').value});$('pin').value='';dirty.delete('watcher');msg(s.lastAction,true,'mMain');draw();}
   catch(e){msg(e.message,false,'mMain');}
 }
 refresh();

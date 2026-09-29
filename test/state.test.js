@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction, normalizeWatcher } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -300,5 +300,23 @@ describe('locked guard sense-and-act (anti remote jailbreak)', () => {
     assert.equal(lockedNeedsAction({ cmd: 'InputHDMI3', powerOn: true, activeAppId: 'tvinput.hdmi1', wantAppId: want }), true);
     assert.equal(lockedNeedsAction({ cmd: 'InputHDMI3', powerOn: true, activeAppId: want, wantAppId: want }), false);
     assert.equal(lockedNeedsAction({ cmd: 'InputHDMI3', powerOn: false, activeAppId: null, wantAppId: want }), true);
+  });
+});
+
+describe('optional turn tracker', () => {
+  it('leaves the turn unchanged when not sent', () => {
+    assert.equal(normalizeWatcher(undefined), undefined);
+    assert.equal(normalizeWatcher(null), undefined);
+  });
+
+  it('trims and caps the name, empty clears', () => {
+    assert.equal(normalizeWatcher('  Milan  '), 'Milan');
+    assert.equal(normalizeWatcher(''), '');
+    assert.equal(normalizeWatcher('x'.repeat(50)), 'x'.repeat(40));
+  });
+
+  it('carries the watcher through state', () => {
+    assert.equal(computeState({ ...base }).watcher, '');
+    assert.equal(computeState({ ...base, watcher: 'Milan' }).watcher, 'Milan');
   });
 });
