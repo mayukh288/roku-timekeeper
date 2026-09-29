@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction, normalizeWatcher, recordTurn } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction, normalizeWatcher, recordTurn, turnShare } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -340,5 +340,31 @@ describe('turn history', () => {
     assert.deepEqual(computeState({ ...base }).turnHistory, []);
     const st = computeState({ ...base, turnHistory: [{ watcher: 'Puki', at: 1, minutes: 30 }] });
     assert.equal(st.turnHistory.length, 1);
+  });
+});
+
+describe('turn share pie', () => {
+  it('splits granted minutes by watcher', () => {
+    const sh = turnShare([
+      { watcher: 'Puki', at: 0, minutes: 30 },
+      { watcher: 'Puli', at: 30 * 60_000, minutes: 60 },
+    ], 90 * 60_000);
+    assert.equal(sh.Puki.pct, 33);
+    assert.equal(sh.Puki.minutes, 30);
+    assert.equal(sh.Puli.minutes, 60);
+    assert.equal(sh.Puli.pct, 67);
+  });
+
+  it('measures open turns until the next turn', () => {
+    const sh = turnShare([
+      { watcher: 'Puki', at: 0, minutes: null },
+      { watcher: 'Puli', at: 30 * 60_000, minutes: null },
+    ], 90 * 60_000);
+    assert.equal(sh.Puki.minutes, 30);
+    assert.equal(sh.Puli.minutes, 60);
+  });
+
+  it('handles empty history', () => {
+    assert.deepEqual(turnShare([], 0), {});
   });
 });

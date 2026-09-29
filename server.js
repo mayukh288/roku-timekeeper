@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.15';
+const VERSION = '1.7.17';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -109,6 +109,27 @@ export function recordTurn(history, entry) {
   const list = Array.isArray(history) ? history.slice() : [];
   list.push(entry);
   return list.slice(-TURN_HISTORY_MAX);
+}
+// Minutes per watcher for the pie: granted minutes when set, otherwise the
+// elapsed time until the next turn (or now for the latest open turn).
+export function turnShare(history, nowMs = Date.now()) {
+  const totals = {};
+  const counts = {};
+  const h = Array.isArray(history) ? history : [];
+  h.forEach((e, i) => {
+    const mins = e && typeof e.minutes === 'number'
+      ? Math.max(0, e.minutes)
+      : Math.max(0, ((h[i + 1] ? h[i + 1].at : nowMs) - (e?.at ?? nowMs)) / 60_000);
+    const who = (e && e.watcher) || '—';
+    totals[who] = (totals[who] || 0) + mins;
+    counts[who] = (counts[who] || 0) + 1;
+  });
+  const grand = Object.values(totals).reduce((a, b) => a + b, 0);
+  const out = {};
+  for (const who of Object.keys(totals)) {
+    out[who] = { minutes: Math.round(totals[who] * 10) / 10, turns: counts[who], pct: grand > 0 ? Math.round((totals[who] / grand) * 100) : 0 };
+  }
+  return out;
 }
 export function parseHM(s) {
   const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(s || '');
@@ -984,6 +1005,7 @@ export function computeState(s, now = new Date(), tz = timeZone) {
     lockAction: s.lockAction || 'poweroff',
     watcher: s.watcher || '',
     turnHistory: Array.isArray(s.turnHistory) ? s.turnHistory : [],
+    turnShare: turnShare(s.turnHistory, now.getTime()),
     chromecastInput: /^InputHDMI[1-4]$/.test(s.chromecastInput) ? s.chromecastInput : 'InputHDMI1',
     night: isNight(now, tz, s.castStart, s.castEnd),
     extraOrigins: Array.isArray(s.extraOrigins) ? s.extraOrigins : [],

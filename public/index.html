@@ -152,10 +152,22 @@ function draw(){
   drawHistory();
 }
 function toggleHistory(){const box=$('turnHistory');const show=box.style.display==='none';box.style.display=show?'block':'none';$('histBtn').textContent=show?'Hide turn history':'Show turn history';if(show)drawHistory();}
+function drawPie(){
+  const sh=s.turnShare||{};const names=Object.keys(sh);
+  if(!names.length)return '';
+  const total=names.reduce((a,n)=>a+sh[n].minutes,0);
+  const colors={Puki:'#89edbd',Puli:'#8fc1ff'};
+  let acc=0;
+  const segs=names.map(n=>{const p=total>0?sh[n].minutes/total*100:0;const seg=`${colors[n]||'#aeb8d3'} ${acc}% ${acc+p}%`;acc+=p;return seg;});
+  const pie=`<div style="width:120px;height:120px;border-radius:50%;margin:8px auto;background:conic-gradient(${segs.join(',')});"></div>`;
+  const leg=names.map(n=>`<div>${n} ${sh[n].pct}% · ${sh[n].minutes} min · ${sh[n].turns} turn${sh[n].turns===1?'':'s'}</div>`).join('');
+  return pie+leg;
+}
 function drawHistory(){
   const box=$('turnHistory');if(!box||box.style.display==='none')return;
   const h=s.turnHistory||[];
-  box.innerHTML=h.length?[...h].reverse().map(e=>{const d=new Date(e.at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});return `<div>${d} · ${e.watcher}${e.minutes?` · ${e.minutes} min`:' · open'}</div>`;}).join(''):'No turns recorded yet.';
+  const log=h.length?[...h].reverse().map(e=>{const d=new Date(e.at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});return `<div>${d} · ${e.watcher}${e.minutes?` · ${e.minutes} min`:' · open'}</div>`;}).join(''):'No turns recorded yet.';
+  box.innerHTML=drawPie()+log;
 }
 async function setup(){
   try{await api('setup',{rokuHost:$('host').value.trim(),pin:$('newPin').value});msg('Saved — TV locked.',true,'mSetup');refresh();}
