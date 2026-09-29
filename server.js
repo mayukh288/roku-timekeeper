@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.14';
+const VERSION = '1.7.15';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -36,6 +36,7 @@ let settings = {
   castStart: '08:00',
   castEnd: '22:30',
   watcher: '',
+  turnHistory: [],
   idle: { lastActiveAt: 0, lastApp: null, lastPosition: null },
   passkeys: {},
   sessions: {},
@@ -100,6 +101,14 @@ export const DEFAULT_CAST_END = '22:30';
 export function normalizeWatcher(v) {
   if (v === undefined || v === null) return undefined;
   return String(v).trim().slice(0, 40);
+}
+export const TURN_HISTORY_MAX = 100;
+// Who had the TV, when (epoch ms), and for how long (bonus minutes, or null
+// for an open-ended unlock). Oldest entries fall off past the cap.
+export function recordTurn(history, entry) {
+  const list = Array.isArray(history) ? history.slice() : [];
+  list.push(entry);
+  return list.slice(-TURN_HISTORY_MAX);
 }
 export function parseHM(s) {
   const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(s || '');
@@ -974,6 +983,7 @@ export function computeState(s, now = new Date(), tz = timeZone) {
     mode: locked ? 'locked' : hasTimer ? 'timed' : 'open',
     lockAction: s.lockAction || 'poweroff',
     watcher: s.watcher || '',
+    turnHistory: Array.isArray(s.turnHistory) ? s.turnHistory : [],
     chromecastInput: /^InputHDMI[1-4]$/.test(s.chromecastInput) ? s.chromecastInput : 'InputHDMI1',
     night: isNight(now, tz, s.castStart, s.castEnd),
     extraOrigins: Array.isArray(s.extraOrigins) ? s.extraOrigins : [],
@@ -1140,6 +1150,7 @@ async function handleRequest(req, res) {
       settings.expiresAt = Date.now() + minutes * 60_000;
       const watcher = normalizeWatcher(input.watcher);
       if (watcher !== undefined) settings.watcher = watcher;
+      if (settings.watcher) settings.turnHistory = recordTurn(settings.turnHistory, { watcher: settings.watcher, at: Date.now(), minutes });
       settings.lastAction = `${minutes} minute(s) granted${settings.watcher ? ` (${settings.watcher})` : ''}`;
       touchIdle('bonus granted');
       log(`api bonus: granted ${minutes} min, expiresAt=${new Date(settings.expiresAt).toISOString()}`);
@@ -1151,6 +1162,7 @@ async function handleRequest(req, res) {
       settings.expiresAt = null;
       const watcher = normalizeWatcher(input.watcher);
       if (watcher !== undefined) settings.watcher = watcher;
+      if (settings.watcher) settings.turnHistory = recordTurn(settings.turnHistory, { watcher: settings.watcher, at: Date.now(), minutes: null });
       settings.lastAction = `Unlocked by parent — no timer${settings.watcher ? ` (${settings.watcher})` : ''}`;
       touchIdle('unlocked');
       log('api unlock: TV unlocked with no expiry (stays on until bonus time or lock)');

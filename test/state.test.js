@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction, normalizeWatcher } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction, normalizeWatcher, recordTurn } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -318,5 +318,27 @@ describe('optional turn tracker', () => {
   it('carries the watcher through state', () => {
     assert.equal(computeState({ ...base }).watcher, '');
     assert.equal(computeState({ ...base, watcher: 'Milan' }).watcher, 'Milan');
+  });
+});
+
+describe('turn history', () => {
+  it('appends turns and caps at 100, oldest first', () => {
+    let h = [];
+    h = recordTurn(h, { watcher: 'Puki', at: 1, minutes: 30 });
+    assert.equal(h.length, 1);
+    for (let i = 0; i < 150; i++) h = recordTurn(h, { watcher: 'Puli', at: i, minutes: null });
+    assert.equal(h.length, 100);
+    assert.equal(h[0].at, 50);
+    assert.equal(h[99].watcher, 'Puli');
+  });
+
+  it('starts fresh from non-array state', () => {
+    assert.deepEqual(recordTurn(null, { watcher: 'Puki', at: 1, minutes: 5 }), [{ watcher: 'Puki', at: 1, minutes: 5 }]);
+  });
+
+  it('exposes history through state, defaulting to empty', () => {
+    assert.deepEqual(computeState({ ...base }).turnHistory, []);
+    const st = computeState({ ...base, turnHistory: [{ watcher: 'Puki', at: 1, minutes: 30 }] });
+    assert.equal(st.turnHistory.length, 1);
   });
 });

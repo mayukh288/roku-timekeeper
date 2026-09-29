@@ -55,11 +55,13 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 </div>
 <div class="row"><label>Minutes<input id="minutes" type="number" min="1" max="720" value="30"></label>
 <label>Parent PIN<input id="pin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
-<div class="row"><label>Watching now (optional)<input id="watcher" maxlength="40" placeholder="Name" autocomplete="off"></label></div>
+<div class="row"><label>Watching now (optional)<select id="watcher"><option value="">—</option><option value="Puki">Puki</option><option value="Puli">Puli</option></select></div>
 <button onclick="bonus()">Add bonus time</button>
 <button class="secondary" onclick="unlock()">Unlock TV (no timer)</button>
 <button class="danger" onclick="lock()">Lock now</button>
 <div class="watch" id="mMain"></div>
+<button class="secondary" id="histBtn" onclick="toggleHistory()">Show turn history</button>
+<div class="watch" id="turnHistory" style="display:none"></div>
 <div class="row"><label>On lock<select id="lockAction"><option value="poweroff">Shut off TV</option><option value="chromecast">Switch to Chromecast</option></select></label></div>
 <button class="secondary" onclick="saveLockMode()">Apply lock mode</button>
 <div class="watch" id="mLockMode"></div>
@@ -147,6 +149,13 @@ function draw(){
   const g=s.watchdog;
   $('guard').textContent=g&&g.lastAttemptAt?`Guard ${new Date(g.lastAttemptAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${g.lastCmd?g.lastCmd+' → ':''}${g.lastDetail||'—'}${g.lastCode?` (code ${g.lastCode})`:''}`:'Guard has not run yet.';
   if(s.mode==='timed'&&!s.locked&&sec>0)s.remainingSeconds--;
+  drawHistory();
+}
+function toggleHistory(){const box=$('turnHistory');const show=box.style.display==='none';box.style.display=show?'block':'none';$('histBtn').textContent=show?'Hide turn history':'Show turn history';if(show)drawHistory();}
+function drawHistory(){
+  const box=$('turnHistory');if(!box||box.style.display==='none')return;
+  const h=s.turnHistory||[];
+  box.innerHTML=h.length?[...h].reverse().map(e=>{const d=new Date(e.at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});return `<div>${d} · ${e.watcher}${e.minutes?` · ${e.minutes} min`:' · open'}</div>`;}).join(''):'No turns recorded yet.';
 }
 async function setup(){
   try{await api('setup',{rokuHost:$('host').value.trim(),pin:$('newPin').value});msg('Saved — TV locked.',true,'mSetup');refresh();}
