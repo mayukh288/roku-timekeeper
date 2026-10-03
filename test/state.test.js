@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction, normalizeWatcher, recordTurn, turnShare } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction, normalizeWatcher, recordTurn, turnShare, dayStamp, shouldAutoLock } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -366,5 +366,30 @@ describe('turn share pie', () => {
 
   it('handles empty history', () => {
     assert.deepEqual(turnShare([], 0), {});
+  });
+});
+
+describe('scheduled auto-lock', () => {
+  const at = (hm) => new Date(`2026-09-19T${hm}:00Z`);
+
+  it('stays off when disabled or invalid', () => {
+    for (const v of [null, '', 'bogus', undefined]) {
+      assert.deepEqual(shouldAutoLock({ locked: false, autoLockAt: v, firedFor: null, now: at('21:31'), tz: 'UTC' }), { fire: false, stamp: null });
+    }
+    assert.equal(dayStamp(at('21:31'), 'UTC'), '2026-09-19');
+  });
+
+  it('fires once when the time is reached and unlocked', () => {
+    assert.deepEqual(shouldAutoLock({ locked: false, autoLockAt: '21:30', firedFor: null, now: at('21:31'), tz: 'UTC' }), { fire: true, stamp: '2026-09-19' });
+  });
+
+  it('does not fire early, twice, or while locked', () => {
+    assert.deepEqual(shouldAutoLock({ locked: false, autoLockAt: '21:30', firedFor: null, now: at('21:29'), tz: 'UTC' }), { fire: false, stamp: null });
+    assert.deepEqual(shouldAutoLock({ locked: false, autoLockAt: '21:30', firedFor: '2026-09-19', now: at('23:00'), tz: 'UTC' }), { fire: false, stamp: '2026-09-19' });
+    assert.deepEqual(shouldAutoLock({ locked: true, autoLockAt: '21:30', firedFor: null, now: at('23:00'), tz: 'UTC' }), { fire: false, stamp: '2026-09-19' });
+  });
+
+  it('fires again the next day', () => {
+    assert.deepEqual(shouldAutoLock({ locked: false, autoLockAt: '21:30', firedFor: '2026-09-19', now: new Date('2026-09-20T21:31:00Z'), tz: 'UTC' }), { fire: true, stamp: '2026-09-20' });
   });
 });

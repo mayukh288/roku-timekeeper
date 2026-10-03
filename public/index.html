@@ -91,6 +91,9 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <div class="row"><label>Parent PIN<input id="spin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
 <button class="secondary" onclick="saveCast()">Save Chromecast settings</button>
 <div class="watch" id="mCast"></div>
+<div class="row"><label><input type="checkbox" id="autoLock" style="width:auto;display:inline"> Auto-lock daily at</label><label>Time<input id="autoLockAt" type="time" value="21:30"></label></div>
+<button class="secondary" onclick="saveAutoLock()">Save auto-lock</button>
+<div class="watch" id="mAuto"></div>
 <div class="row"><label>Away (Tailscale) https URL<input id="awayUrl" placeholder="https://truenas.tailXXXX.ts.net" autocomplete="off"></label></div>
 <button class="secondary" onclick="saveOrigin()">Save away URL</button>
 <div class="watch" id="mAway"></div>
@@ -99,7 +102,7 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 let s={};
 const $=id=>document.querySelector('#'+id);
 const dirty=new Set();
-['lockAction','hdmi','awayUrl','castStart','castEnd','watcher'].forEach(id=>{const e=$(id);if(e)e.addEventListener('input',()=>dirty.add(id));});
+['lockAction','hdmi','awayUrl','castStart','castEnd','watcher','autoLock','autoLockAt'].forEach(id=>{const e=$(id);if(e)e.addEventListener('input',()=>dirty.add(id));});
 const msg=(t,ok,loc)=>{const c=ok?'#89edbd':'#ffb7b7';const m=$('message');m.textContent=t;m.style.color=c;if(loc){const e=$(loc);if(e){e.textContent=t;e.style.color=c;}}};
 async function api(path,data){
   let r;
@@ -125,6 +128,8 @@ async function refresh(){
   if(ae!==$('castStart')&&!dirty.has('castStart'))$('castStart').value=s.castStart||'08:00';
   if(ae!==$('castEnd')&&!dirty.has('castEnd'))$('castEnd').value=s.castEnd||'22:30';
   if(ae!==$('watcher')&&!dirty.has('watcher'))$('watcher').value=s.watcher||'';
+  if(ae!==$('autoLock')&&!dirty.has('autoLock'))$('autoLock').checked=!!s.autoLockAt;
+  if(ae!==$('autoLockAt')&&!dirty.has('autoLockAt'))$('autoLockAt').value=s.autoLockAt||'21:30';
   const secure=window.isSecureContext&&!!window.PublicKeyCredential;
   $('faceSecure').style.display=secure?'block':'none';
   $('faceHint').style.display=secure?'none':'block';
@@ -231,6 +236,15 @@ async function saveOrigin(){
     s=await api('settings',{pin:$('spin').value,extraOrigins:v?[v]:[]});
     $('spin').value='';dirty.delete('awayUrl');msg('Away URL saved.',true,'mAway');draw();
   }catch(e){msg(e.message,false,'mAway');}
+}
+async function saveAutoLock(){
+  try{
+    const on=$('autoLock').checked,t=$('autoLockAt').value;
+    if(on&&!/^\d{2}:\d{2}$/.test(t))throw Error('Auto-lock time must be HH:MM (24h).');
+    s=await api('settings',{pin:$('spin').value,autoLockAt:on?t:null});
+    $('spin').value='';dirty.delete('autoLock');dirty.delete('autoLockAt');await refresh();
+    msg(s.autoLockAt?`Auto-lock on at ${s.autoLockAt} daily.`:'Auto-lock disabled.',true,'mAuto');
+  }catch(e){msg(e.message,false,'mAuto');}
 }
 async function lock(){
   try{s=await api('lock',{pin:$('pin').value});$('pin').value='';dirty.delete('watcher');msg(s.lastAction,true,'mMain');draw();}

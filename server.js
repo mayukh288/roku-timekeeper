@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.17';
+const VERSION = '1.7.18';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -37,6 +37,8 @@ let settings = {
   castEnd: '22:30',
   watcher: '',
   turnHistory: [],
+  autoLockAt: null,
+  autoLockFired: null,
   idle: { lastActiveAt: 0, lastApp: null, lastPosition: null },
   passkeys: {},
   sessions: {},
@@ -143,6 +145,24 @@ export function minutesInWindow(mins, start, end) {
 }
 
 // "Night" = outside the Chromecast window (default 10:30pm–8am).
+export function dayStamp(d = new Date(), tz = timeZone) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function tzMinutes(d, tz) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(d);
+  const num = (t) => Number(parts.find((p) => p.type === t).value);
+  return (num('hour') % 24) * 60 + num('minute');
+}
+// Daily scheduled lock. Returns whether to fire now plus the date stamp the
+// caller persists (stamping happens even while locked, so a deliberate evening
+// unlock is not ambushed later the same night). Null/invalid disables.
+export function shouldAutoLock({ locked, autoLockAt, firedFor, now = new Date(), tz = timeZone }) {
+  if (typeof autoLockAt !== 'string' || parseHM(autoLockAt) === null) return { fire: false, stamp: firedFor || null };
+  const stamp = dayStamp(now, tz);
+  if (firedFor === stamp) return { fire: false, stamp };
+  if (tzMinutes(now, tz) < parseHM(autoLockAt)) return { fire: false, stamp: firedFor || null };
+  return { fire: !locked, stamp };
+}
 export function isNight(d = new Date(), tz = timeZone, startHM = DEFAULT_CAST_START, endHM = DEFAULT_CAST_END) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: tz,
@@ -789,6 +809,26 @@ async function enforce() {
     log(`timer expired (expiresAt=${new Date(settings.expiresAt).toISOString()}), locking`);
     await lockTv('Bonus time ended — TV powered off');
   }
+  const auto = shouldAutoLock({ locked: settings.locked, autoLockAt: settings.autoLockAt, firedFor: settings.autoLockFired });
+  if (auto.stamp !== (settings.autoLockFired || null)) {
+    settings.autoLockFired = auto.stamp;
+    try { await save(); } catch { /* non-fatal; retried next round */ }
+  }
+  if (auto.fire) {
+    log(`auto-lock at ${settings.autoLockAt}, locking`);
+    let tvUp = true;
+    try { await rokuQuery('query/device-info', 2500); } catch { tvUp = false; }
+    if (!tvUp && lockCommand(settings) === 'PowerOff') {
+      settings.locked = true;
+      settings.expiresAt = null;
+      settings.watcher = '';
+      settings.lastAction = `Auto-locked at ${settings.autoLockAt} (TV already off)`;
+      touchIdle('auto-lock');
+      try { await save(); } catch { /* non-fatal */ }
+    } else {
+      await lockTv(`Auto-lock at ${settings.autoLockAt}`);
+    }
+  }
 }
 
 // Locked-state guard: fast sense + immediate action. While locked, every tick
@@ -1006,6 +1046,7 @@ export function computeState(s, now = new Date(), tz = timeZone) {
     watcher: s.watcher || '',
     turnHistory: Array.isArray(s.turnHistory) ? s.turnHistory : [],
     turnShare: turnShare(s.turnHistory, now.getTime()),
+    autoLockAt: typeof s.autoLockAt === 'string' && parseHM(s.autoLockAt) !== null ? s.autoLockAt : null,
     chromecastInput: /^InputHDMI[1-4]$/.test(s.chromecastInput) ? s.chromecastInput : 'InputHDMI1',
     night: isNight(now, tz, s.castStart, s.castEnd),
     extraOrigins: Array.isArray(s.extraOrigins) ? s.extraOrigins : [],
@@ -1238,6 +1279,12 @@ async function handleRequest(req, res) {
           }
           settings[key] = input[key];
         }
+      }
+      if (input.autoLockAt !== undefined) {
+        if (input.autoLockAt !== null && parseHM(input.autoLockAt) === null) {
+          return send(res, 400, { error: 'Auto-lock time must be HH:MM (24h) or null to disable.' });
+        }
+        settings.autoLockAt = input.autoLockAt;
       }
       log(`api settings: lockAction=${settings.lockAction} chromecastInput=${settings.chromecastInput} window=${settings.castStart}-${settings.castEnd}`);
       await save();
