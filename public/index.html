@@ -92,6 +92,7 @@ small{display:block;margin-top:14px;line-height:1.45;color:#aeb8d3}
 <button class="secondary" onclick="saveCast()">Save Chromecast settings</button>
 <div class="watch" id="mCast"></div>
 <div class="row"><label><input type="checkbox" id="autoLock" style="width:auto;display:inline"> Auto-lock daily at</label><label>Time<input id="autoLockAt" type="time" value="21:30"></label></div>
+<div class="row"><label>Parent PIN<input id="apin" type="password" inputmode="numeric" autocomplete="current-password"></label></div>
 <button class="secondary" onclick="saveAutoLock()">Save auto-lock</button>
 <div class="watch" id="mAuto"></div>
 <div class="row"><label>Away (Tailscale) https URL<input id="awayUrl" placeholder="https://truenas.tailXXXX.ts.net" autocomplete="off"></label></div>
@@ -241,9 +242,9 @@ async function saveAutoLock(){
   try{
     const on=$('autoLock').checked,t=$('autoLockAt').value;
     if(on&&!/^\d{2}:\d{2}$/.test(t))throw Error('Auto-lock time must be HH:MM (24h).');
-    s=await api('settings',{pin:$('spin').value,autoLockAt:on?t:null});
-    $('spin').value='';dirty.delete('autoLock');dirty.delete('autoLockAt');await refresh();
-    msg(s.autoLockAt?`Auto-lock on at ${s.autoLockAt} daily.`:'Auto-lock disabled.',true,'mAuto');
+    s=await api('settings',{pin:$('apin').value,autoLockAt:on?t:null});
+    $('apin').value='';dirty.delete('autoLock');dirty.delete('autoLockAt');await refresh();
+    msg(s.autoLockAt?`Auto-lock on at ${s.autoLockAt} daily (first run at the next ${s.autoLockAt}).`:'Auto-lock disabled.',true,'mAuto');
   }catch(e){msg(e.message,false,'mAuto');}
 }
 async function lock(){

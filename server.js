@@ -7,7 +7,7 @@ import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } fro
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.18';
+const VERSION = '1.7.19';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -162,6 +162,12 @@ export function shouldAutoLock({ locked, autoLockAt, firedFor, now = new Date(),
   if (firedFor === stamp) return { fire: false, stamp };
   if (tzMinutes(now, tz) < parseHM(autoLockAt)) return { fire: false, stamp: firedFor || null };
   return { fire: !locked, stamp };
+}
+// First-run rule for a newly saved time: if it already passed today, stamp
+// today so the first run lands tomorrow instead of firing immediately.
+export function autoLockSaveStamp(autoLockAt, now = new Date(), tz = timeZone) {
+  if (typeof autoLockAt !== 'string' || parseHM(autoLockAt) === null) return null;
+  return tzMinutes(now, tz) >= parseHM(autoLockAt) ? dayStamp(now, tz) : null;
 }
 export function isNight(d = new Date(), tz = timeZone, startHM = DEFAULT_CAST_START, endHM = DEFAULT_CAST_END) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -1285,6 +1291,8 @@ async function handleRequest(req, res) {
           return send(res, 400, { error: 'Auto-lock time must be HH:MM (24h) or null to disable.' });
         }
         settings.autoLockAt = input.autoLockAt;
+        const firstStamp = autoLockSaveStamp(settings.autoLockAt);
+        if (firstStamp) settings.autoLockFired = firstStamp;
       }
       log(`api settings: lockAction=${settings.lockAction} chromecastInput=${settings.chromecastInput} window=${settings.castStart}-${settings.castEnd}`);
       await save();

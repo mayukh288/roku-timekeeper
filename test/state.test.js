@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction, normalizeWatcher, recordTurn, turnShare, dayStamp, shouldAutoLock } from '../server.js';
+import { computeState, validPin, isNight, lockCommand, buildWakePacket, parsePowerMode, tvIsOn, tvAppId, parseActiveApp, shouldEnforceSwitch, parseHM, minutesInWindow, extractWakeMac, nightSuffix, parseScreensaver, parsePlayback, shouldIdleSwitch, lockedNeedsAction, normalizeWatcher, recordTurn, turnShare, dayStamp, shouldAutoLock, autoLockSaveStamp } from '../server.js';
 
 const base = {
   rokuHost: '192.168.1.112',
@@ -391,5 +391,17 @@ describe('scheduled auto-lock', () => {
 
   it('fires again the next day', () => {
     assert.deepEqual(shouldAutoLock({ locked: false, autoLockAt: '21:30', firedFor: '2026-09-19', now: new Date('2026-09-20T21:31:00Z'), tz: 'UTC' }), { fire: true, stamp: '2026-09-20' });
+  });
+});
+
+describe('auto-lock first run', () => {
+  it('defers to tomorrow when the saved time already passed today', () => {
+    assert.equal(autoLockSaveStamp('03:30', new Date('2026-10-03T20:12:00Z'), 'UTC'), '2026-10-03');
+  });
+
+  it('leaves a future time alone, and null/invalid needs nothing', () => {
+    assert.equal(autoLockSaveStamp('21:30', new Date('2026-10-03T20:12:00Z'), 'UTC'), null);
+    assert.equal(autoLockSaveStamp(null, new Date('2026-10-03T20:12:00Z'), 'UTC'), null);
+    assert.equal(autoLockSaveStamp('bogus', new Date('2026-10-03T20:12:00Z'), 'UTC'), null);
   });
 });
