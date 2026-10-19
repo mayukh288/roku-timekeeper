@@ -59,6 +59,35 @@ Face ID uses passkeys (WebAuthn), which Safari only allows over HTTPS:
 
 `test/webauthn.test.js` covers registration/assertion verification with generated vectors.
 
+## Alexa voice announcements (Voice Monkey)
+
+The living-room Echo warns "The TV will turn off in 5 minutes", then announces
+at lock time ("Turning off the TV now" / "Switching to Chromecast"). Scheduled
+auto-lock also gets a 5-minute warning. Announcements need internet
+(TrueNAS → Voice Monkey → Amazon → Echo) and play at the Echo's own volume —
+use a scheduled Alexa routine (8pm volume 3, 9am volume 6) for quiet evenings.
+
+One-time Alexa-side setup (iPhone):
+
+1. Alexa app → More → Skills → search "Voice Monkey" → Enable, and link the
+   same Amazon account as the Echo ("Login with Amazon" — Voice Monkey never
+   sees the password).
+2. Sign in at `app.voicemonkey.io/speakers` → Add New Speaker (e.g.
+   `Living Room Echo`).
+3. Alexa app → More → Routines → + : When *Smart Home → Alexa Voice Monkey
+   v3 → VM Speakers → Living Room Echo*; action *Custom → "open Voice
+   Monkey"*; From → the living-room Echo. Save.
+4. In the dashboard Configuration section: tick Alexa announcements, enter the
+   Speaker device ID (e.g. `living-room-echo-…`, listed in the Voice Monkey
+   console), paste the API token, Save with the parent PIN, then Send test
+   announcement.
+
+Security: the token (revocable in the Voice Monkey console, one per
+integration) is stored AES-256-GCM encrypted in `settings.json`; the vault key
+is a separate 0600 file (`DATA_DIR/.alexa-key`) — back up `/data` to keep both.
+The token is never logged and never sent to the browser; saving needs the
+parent PIN. `test/alexa.test.js` covers the vault and the warning gates.
+
 ## Tests
 
 `node --test` (Node 20+) runs `test/state.test.js`, covering the

@@ -3,4 +3,5 @@ tls-local/
 node_modules/
 data/
 settings.json
+.alexa-key
 .DS_Store

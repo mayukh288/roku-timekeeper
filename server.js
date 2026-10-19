@@ -1,13 +1,13 @@
 import dgram from 'node:dgram';
 import http from 'node:http';
 import https from 'node:https';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } from 'node:crypto';
+import { createHash, createPublicKey, createCipheriv, createDecipheriv, randomBytes, timingSafeEqual, verify } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const VERSION = '1.7.19';
+const VERSION = '1.8.0';
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '0.0.0.0';
 const port = Number(process.env.PORT || 3030);
@@ -46,6 +46,10 @@ let settings = {
   expiresAt: null,
   lastAction: 'Awaiting setup',
   lastWatchdog: null,
+  alexa: { enabled: false, device: '', tokenEnc: null },
+  alexaWarnedBonusFor: null,
+  alexaWarnedAutoFor: null,
+  lastAlexa: null,
 };
 let lastWatchdogSaved = '';
 
@@ -55,6 +59,8 @@ async function load() {
     settings = { ...settings, ...JSON.parse(await readFile(settingsPath, 'utf8')) };
   }
   if (!settings.rokuHost && defaultRokuHost) settings.rokuHost = defaultRokuHost;
+  // Older settings.json predates Alexa: normalize so readers never see undefined.
+  settings.alexa = { enabled: false, device: '', tokenEnc: null, ...((settings.alexa && typeof settings.alexa === 'object') ? settings.alexa : {}) };
   // Fresh idle observation after every restart: never auto-act on stale data.
   settings.idle = { lastActiveAt: Date.now(), lastApp: null, lastPosition: null };
   // Expired while we were down -> boot locked.
@@ -791,6 +797,7 @@ async function lockTv(reason) {
   settings.locked = true;
   settings.expiresAt = null;
   settings.watcher = '';
+  settings.alexaWarnedBonusFor = null;
   touchIdle('locked');
   try {
     const result = await sendLockCommand(cmd);
@@ -808,6 +815,7 @@ async function lockTv(reason) {
     log(`lockTv: ${cmd} FAILED, state=locked (TV may already be off/unreachable)`);
   }
   await save();
+  await announceAlexa(alexaLockSpeech(cmd));
 }
 
 async function enforce() {
@@ -835,6 +843,7 @@ async function enforce() {
       await lockTv(`Auto-lock at ${settings.autoLockAt}`);
     }
   }
+  await maybeAlexaWarnings();
 }
 
 // Locked-state guard: fast sense + immediate action. While locked, every tick
@@ -1039,6 +1048,168 @@ async function idleCheck() {
   }
 }
 
+// ---------- Alexa voice announcements (Voice Monkey skill + HTTPS API) ----------
+// The Voice Monkey token is the only Alexa credential: it can only trigger
+// announcements/routines on the user's own Echos, and it is revocable in the
+// Voice Monkey console. It is stored AES-256-GCM encrypted in settings.json;
+// the 32-byte vault key lives beside it in DATA_DIR/.alexa-key (0600).
+// The token is never logged and never sent to the browser.
+export const ALEXA_ANNOUNCE_URL = 'https://api-v3.voicemonkey.io/announce';
+export const ALEXA_WARN_MS = 5 * 60_000;
+export const ALEXA_MAX_SPEECH = 1000;
+const alexaKeyPath = join(dataDir, '.alexa-key');
+
+export function encryptSecret(plaintext, key) {
+  const k = Buffer.isBuffer(key) ? key : Buffer.from(String(key || ''), 'hex');
+  if (k.length !== 32) throw new Error('Vault key must be 32 bytes');
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', k, iv);
+  const data = Buffer.concat([cipher.update(String(plaintext), 'utf8'), cipher.final()]);
+  return { iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') };
+}
+
+export function decryptSecret(enc, key) {
+  const k = Buffer.isBuffer(key) ? key : Buffer.from(String(key || ''), 'hex');
+  if (k.length !== 32) throw new Error('Vault key must be 32 bytes');
+  if (!enc || typeof enc !== 'object') throw new Error('No encrypted secret');
+  const decipher = createDecipheriv('aes-256-gcm', k, Buffer.from(enc.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(enc.tag, 'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(enc.data, 'base64')), decipher.final()]).toString('utf8');
+}
+
+async function readVaultKey() {
+  try {
+    const k = Buffer.from((await readFile(alexaKeyPath, 'utf8')).trim(), 'hex');
+    return k.length === 32 ? k : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadOrCreateVaultKey() {
+  const existing = await readVaultKey();
+  if (existing) return existing;
+  const k = randomBytes(32);
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(alexaKeyPath, k.toString('hex'), { mode: 0o600 });
+  try {
+    await chmod(alexaKeyPath, 0o600);
+  } catch {}
+  return k;
+}
+
+export function buildAnnounceBody(token, device, speech) {
+  return { token, device, speech: String(speech || '').slice(0, ALEXA_MAX_SPEECH) };
+}
+
+// Thin POST wrapper with an injectable fetch for tests.
+export async function postAnnouncement({ url, token, device, speech, timeoutMs = 10_000 }, fetchFn = fetch) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchFn(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(buildAnnounceBody(token, device, speech)),
+      signal: controller.signal,
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) throw new Error(`Voice Monkey HTTP ${res.status}`);
+    return text.slice(0, 200);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function alexaConfigured() {
+  const a = settings.alexa || {};
+  return Boolean(a.enabled && a.device && a.tokenEnc);
+}
+
+// Best-effort announcement: never throws, never logs the token. Test mode
+// bypasses the enabled flag so credentials can be verified while disabled.
+async function announceAlexa(speech, { test = false } = {}) {
+  const a = settings.alexa || {};
+  if (!a.device || !a.tokenEnc || (!a.enabled && !test)) return { skipped: true };
+  let token;
+  try {
+    const key = await readVaultKey();
+    if (!key) throw new Error('vault key missing — re-save the token');
+    token = decryptSecret(a.tokenEnc, key);
+  } catch (error) {
+    log(`alexa: cannot unlock token (${error.message})`);
+    settings.lastAlexa = { at: new Date().toISOString(), ok: false, detail: error.message };
+    try { await save(); } catch {}
+    return { ok: false };
+  }
+  try {
+    await postAnnouncement({ url: ALEXA_ANNOUNCE_URL, token, device: a.device, speech });
+    settings.lastAlexa = { at: new Date().toISOString(), ok: true, detail: test ? 'test announcement sent' : 'announcement sent' };
+    log('alexa: announcement sent');
+    try { await save(); } catch {}
+    return { ok: true };
+  } catch (error) {
+    settings.lastAlexa = { at: new Date().toISOString(), ok: false, detail: error.message || 'request failed' };
+    log(`alexa: announcement failed (${error.message})`);
+    try { await save(); } catch {}
+    return { ok: false };
+  }
+}
+
+// One 5-minute warning per bonus timer, keyed by the exact expiry warned for.
+export function bonusWarnDue({ locked, expiresAt, warnedFor, nowMs = Date.now(), warnMs = ALEXA_WARN_MS }) {
+  if (locked || typeof expiresAt !== 'number') return false;
+  if (warnedFor === expiresAt) return false;
+  const remaining = expiresAt - nowMs;
+  return remaining > 0 && remaining <= warnMs;
+}
+
+// One 5-minute warning per scheduled auto-lock day, keyed by day + time.
+// Minute precision is fine for a 5-minute window.
+export function autoWarnDue({ locked, autoLockAt, firedFor, warnedFor, now = new Date(), tz = timeZone, warnMs = ALEXA_WARN_MS }) {
+  const none = { due: false, key: null };
+  if (locked || typeof autoLockAt !== 'string' || parseHM(autoLockAt) === null) return none;
+  const stamp = dayStamp(now, tz);
+  if (firedFor === stamp) return none;
+  const key = `${stamp} ${autoLockAt}`;
+  if (warnedFor === key) return { due: false, key };
+  const diffMs = (parseHM(autoLockAt) - tzMinutes(now, tz)) * 60_000;
+  if (diffMs <= 0 || diffMs > warnMs) return { due: false, key };
+  return { due: true, key };
+}
+
+export function alexaLockSpeech(cmd) {
+  return cmd === 'PowerOff'
+    ? 'TV time is over. Turning off the TV now.'
+    : 'TV time is over. Switching to Chromecast.';
+}
+
+let alexaWarnBusy = false;
+async function maybeAlexaWarnings() {
+  if (!alexaConfigured() || settings.locked || alexaWarnBusy) return;
+  alexaWarnBusy = true;
+  try {
+    if (bonusWarnDue({ locked: settings.locked, expiresAt: settings.expiresAt, warnedFor: settings.alexaWarnedBonusFor })) {
+      settings.alexaWarnedBonusFor = settings.expiresAt;
+      try { await save(); } catch {}
+      await announceAlexa('The TV will turn off in 5 minutes.');
+    }
+    const auto = autoWarnDue({
+      locked: settings.locked,
+      autoLockAt: settings.autoLockAt,
+      firedFor: settings.autoLockFired,
+      warnedFor: settings.alexaWarnedAutoFor,
+    });
+    if (auto.due) {
+      settings.alexaWarnedAutoFor = auto.key;
+      try { await save(); } catch {}
+      await announceAlexa('The TV will lock in 5 minutes.');
+    }
+  } finally {
+    alexaWarnBusy = false;
+  }
+}
+
 export function computeState(s, now = new Date(), tz = timeZone) {
   const hasTimer = s.expiresAt !== null && s.expiresAt !== undefined;
   const remainingMs = hasTimer ? Math.max(0, s.expiresAt - Date.now()) : 0;
@@ -1067,6 +1238,14 @@ export function computeState(s, now = new Date(), tz = timeZone) {
       lastCmd: s.lastWatchdog?.cmd || null,
       lastCode: s.lastWatchdog?.code ?? null,
       lastDetail: s.lastWatchdog?.detail || null,
+    },
+    alexa: {
+      enabled: Boolean(s.alexa && s.alexa.enabled),
+      device: (s.alexa && s.alexa.device) || '',
+      configured: Boolean(s.alexa && s.alexa.device && s.alexa.tokenEnc),
+      lastAt: s.lastAlexa?.at || null,
+      lastOk: s.lastAlexa?.ok ?? null,
+      lastDetail: s.lastAlexa?.detail || null,
     },
   };
 }
@@ -1217,6 +1396,7 @@ async function handleRequest(req, res) {
       }
       settings.locked = false;
       settings.expiresAt = Date.now() + minutes * 60_000;
+      settings.alexaWarnedBonusFor = null;
       const watcher = normalizeWatcher(input.watcher);
       if (watcher !== undefined) settings.watcher = watcher;
       if (settings.watcher) settings.turnHistory = recordTurn(settings.turnHistory, { watcher: settings.watcher, at: Date.now(), minutes });
@@ -1307,6 +1487,45 @@ async function handleRequest(req, res) {
       log('api lock: requested by parent');
       await lockTv('Locked by parent');
       return send(res, 200, state());
+    }
+    if (req.url === '/api/alexa') {
+      if (!settings.alexa || typeof settings.alexa !== 'object') {
+        settings.alexa = { enabled: false, device: '', tokenEnc: null };
+      }
+      if (input.clear === true) {
+        settings.alexa = { enabled: false, device: '', tokenEnc: null };
+        settings.lastAlexa = null;
+        log('api alexa: credentials cleared');
+        await save();
+        return send(res, 200, state());
+      }
+      if (input.enabled !== undefined) settings.alexa.enabled = Boolean(input.enabled);
+      if (input.device !== undefined) {
+        const device = String(input.device || '').trim().slice(0, 80);
+        if (device && !/^[A-Za-z0-9][A-Za-z0-9 _.-]*$/.test(device)) {
+          return send(res, 400, { error: 'Device must be the Voice Monkey Speaker ID.' });
+        }
+        settings.alexa.device = device;
+      }
+      if (typeof input.token === 'string' && input.token.length > 0) {
+        if (input.token.length < 8 || input.token.length > 500) {
+          return send(res, 400, { error: 'That token looks invalid.' });
+        }
+        settings.alexa.tokenEnc = encryptSecret(input.token, await loadOrCreateVaultKey());
+      }
+      log(`api alexa: saved (enabled=${settings.alexa.enabled} device=${settings.alexa.device || '(none)'} hasToken=${Boolean(settings.alexa.tokenEnc)})`);
+      await save();
+      return send(res, 200, state());
+    }
+    if (req.url === '/api/alexa/test') {
+      const a = settings.alexa || {};
+      if (!a.device || !a.tokenEnc) {
+        return send(res, 400, { error: 'Save the Voice Monkey token and Speaker device first.' });
+      }
+      log('api alexa: test announcement requested');
+      const r = await announceAlexa('This is a test from TV Time.', { test: true });
+      if (r.ok) return send(res, 200, { ok: true, alexa: state().alexa });
+      return send(res, 502, { error: (settings.lastAlexa && settings.lastAlexa.detail) || 'Announcement failed.' });
     }
     return send(res, 404, { error: 'Not found' });
   } catch (error) {
